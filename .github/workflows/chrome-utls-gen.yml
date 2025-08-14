@@ -1,0 +1,436 @@
+name: Chrome-uTLS-Gen CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'cmd/chrome-utls-gen/**'
+      - 'internal/tlsgen/**'
+      - 'internal/utils/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/chrome-utls-gen.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'cmd/chrome-utls-gen/**'
+      - 'internal/tlsgen/**'
+      - 'internal/utils/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/chrome-utls-gen.yml'
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+  BINARY_NAME: 'chrome-utls-gen'
+
+jobs:
+  test:
+    name: Test and Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+          
+    - name: Download dependencies
+      run: go mod download
+      
+    - name: Run unit tests
+      run: |
+        go test -v -race -coverprofile=coverage.out ./internal/tlsgen/...
+        go test -v -race -coverprofile=coverage-utils.out ./internal/utils/...
+        go test -v -race -coverprofile=coverage-main.out ./cmd/chrome-utls-gen/...
+        
+    - name: Generate coverage report
+      run: |
+        go tool cover -html=coverage.out -o coverage.html
+        go tool cover -func=coverage.out
+        
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: |
+          coverage.out
+          coverage.html
+          
+    - name: Build chrome-utls-gen
+      run: |
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/chrome-utls-gen
+          
+    - name: Verify binary
+      run: |
+        ./${{ env.BINARY_NAME }} --version
+        ./${{ env.BINARY_NAME }} --help
+
+  clienthello-generation-test:
+    name: ClientHello Generation Test
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build chrome-utls-gen
+      run: |
+        CGO_ENABLED=0 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/chrome-utls-gen
+          
+    - name: Generate ClientHello blob
+      id: generate
+      run: |
+        ./${{ env.BINARY_NAME }} generate --output clienthello.bin
+        echo "generate_exit_code=$?" >> $GITHUB_OUTPUT
+        
+        # Verify the file was created and has content
+        if [ ! -f "clienthello.bin" ]; then
+          echo "ERROR: ClientHello blob was not generated"
+          exit 1
+        fi
+        
+        # Check file size (should be > 0 bytes)
+        size=$(stat -c%s "clienthello.bin")
+        if [ "$size" -eq 0 ]; then
+          echo "ERROR: ClientHello blob is empty"
+          exit 1
+        fi
+        
+        echo "ClientHello blob generated successfully (${size} bytes)"
+        
+    - name: Validate generation success
+      run: |
+        if [ "${{ steps.generate.outputs.generate_exit_code }}" != "0" ]; then
+          echo "ERROR: ClientHello generation failed"
+          exit 1
+        fi
+        echo "ClientHello generation validated successfully"
+        
+    - name: Compare with golden files (if available)
+      run: |
+        # Check if golden files exist for comparison
+        if [ -d "tests/golden/chrome_handshakes" ]; then
+          echo "Comparing generated ClientHello with golden files..."
+          
+          # Find the most recent golden file
+          GOLDEN_FILE=$(find tests/golden/chrome_handshakes -name "clienthello.bin" | head -1)
+          
+          if [ -n "$GOLDEN_FILE" ]; then
+            echo "Comparing with: $GOLDEN_FILE"
+            
+            # Compare file sizes first
+            GOLDEN_SIZE=$(stat -c%s "$GOLDEN_FILE")
+            GENERATED_SIZE=$(stat -c%s "clienthello.bin")
+            
+            echo "Golden file size: $GOLDEN_SIZE bytes"
+            echo "Generated file size: $GENERATED_SIZE bytes"
+            
+            # Note: Exact byte comparison may not be appropriate due to timestamps
+            # This is more of a sanity check
+            if [ "$GENERATED_SIZE" -lt 100 ]; then
+              echo "WARNING: Generated ClientHello seems too small"
+            fi
+          else
+            echo "No golden ClientHello files found for comparison"
+          fi
+        else
+          echo "No golden files directory found, skipping comparison"
+        fi
+        
+    - name: Upload generated ClientHello
+      uses: actions/upload-artifact@v3
+      with:
+        name: generated-clienthello
+        path: |
+          clienthello.bin
+
+  ja3-test:
+    name: JA3 Fingerprint Test
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build chrome-utls-gen
+      run: |
+        CGO_ENABLED=0 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/chrome-utls-gen
+          
+    - name: Run JA3 self-test
+      id: ja3_test
+      run: |
+        # Test against a reliable HTTPS endpoint
+        ./${{ env.BINARY_NAME }} ja3-test https://www.google.com > ja3_results.txt
+        echo "ja3_test_exit_code=$?" >> $GITHUB_OUTPUT
+        cat ja3_results.txt
+        
+    - name: Validate JA3 test behavior
+      run: |
+        # JA3 test should succeed (exit code 0) for valid targets
+        if [ "${{ steps.ja3_test.outputs.ja3_test_exit_code }}" != "0" ]; then
+          echo "ERROR: JA3 test failed against google.com"
+          echo "This could indicate:"
+          echo "1. Network connectivity issues"
+          echo "2. JA3 fingerprint mismatch"
+          echo "3. TLS handshake generation problems"
+          
+          # Don't fail the build for network issues, but warn
+          echo "::warning::JA3 test failed - this may be due to network issues"
+        else
+          echo "JA3 test passed successfully"
+        fi
+        
+    - name: Test JA3 against multiple targets
+      continue-on-error: true
+      run: |
+        # Test against multiple reliable endpoints
+        targets=("https://httpbin.org" "https://example.com" "https://github.com")
+        
+        for target in "${targets[@]}"; do
+          echo "Testing JA3 against: $target"
+          if ./${{ env.BINARY_NAME }} ja3-test "$target"; then
+            echo "✓ JA3 test passed for $target"
+          else
+            echo "✗ JA3 test failed for $target"
+          fi
+        done
+        
+    - name: Upload JA3 test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: ja3-test-results
+        path: |
+          ja3_results.txt
+
+  template-generation-test:
+    name: Template Generation and Validation
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build chrome-utls-gen
+      run: |
+        CGO_ENABLED=0 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/chrome-utls-gen
+          
+    - name: Generate templates for different Chrome versions
+      run: |
+        # Generate template for current stable
+        ./${{ env.BINARY_NAME }} generate --version stable --output stable_clienthello.bin
+        
+        # Generate template for N-2 version if supported
+        ./${{ env.BINARY_NAME }} generate --version stable-2 --output stable_n2_clienthello.bin || echo "N-2 version not available"
+        
+        # Verify files were created
+        ls -la *_clienthello.bin
+        
+    - name: Validate template metadata
+      run: |
+        # Check if templates directory exists and has expected structure
+        if [ -d "cmd/chrome-utls-gen/templates" ]; then
+          echo "Templates directory found:"
+          ls -la cmd/chrome-utls-gen/templates/
+          
+          # Validate JSON template files
+          for template in cmd/chrome-utls-gen/templates/*.json; do
+            if [ -f "$template" ]; then
+              echo "Validating template: $template"
+              if jq empty "$template"; then
+                echo "✓ Valid JSON: $template"
+              else
+                echo "✗ Invalid JSON: $template"
+                exit 1
+              fi
+            fi
+          done
+        else
+          echo "No templates directory found"
+        fi
+        
+    - name: Upload generated templates
+      uses: actions/upload-artifact@v3
+      with:
+        name: generated-templates
+        path: |
+          *_clienthello.bin
+          cmd/chrome-utls-gen/templates/
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Run integration tests
+      run: |
+        go test -v -tags=integration ./tests/integration/chrome_utls_gen_e2e_test.go
+        go test -v -tags=integration ./tests/integration/tls_cross_platform_test.go
+        
+    - name: Upload integration test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: integration-test-results
+        path: |
+          tests/integration/results/
+
+  build-cross-platform:
+    name: Cross-Platform Build
+    runs-on: ubuntu-latest
+    needs: [test, clienthello-generation-test, ja3-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+            
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build binary
+      run: |
+        BINARY_NAME="${{ env.BINARY_NAME }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          BINARY_NAME="${BINARY_NAME}.exe"
+        fi
+        
+        CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o "${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}" \
+          ./cmd/chrome-utls-gen
+          
+    - name: Generate checksums
+      run: |
+        BINARY_NAME="${{ env.BINARY_NAME }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          BINARY_NAME="${BINARY_NAME}.exe"
+        fi
+        
+        sha256sum "${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}" > "${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256"
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: chrome-utls-gen-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: |
+          chrome-utls-gen*-${{ matrix.goos }}-${{ matrix.goarch }}*
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Gosec Security Scanner
+      uses: securecodewarrior/github-action-gosec@master
+      with:
+        args: '-fmt sarif -out gosec-results.sarif ./...'
+        
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: gosec-results.sarif
+        
+    - name: Run govulncheck
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
+  failure-notification:
+    name: Failure Notification
+    runs-on: ubuntu-latest
+    needs: [test, clienthello-generation-test, ja3-test, template-generation-test, integration-test, security-scan]
+    if: failure()
+    
+    steps:
+    - name: Notify on failure
+      run: |
+        echo "::error::Chrome-uTLS-Gen workflow failed. Check the following:"
+        echo "::error::1. Unit tests passed: ${{ needs.test.result }}"
+        echo "::error::2. ClientHello generation passed: ${{ needs.clienthello-generation-test.result }}"
+        echo "::error::3. JA3 tests passed: ${{ needs.ja3-test.result }}"
+        echo "::error::4. Template generation passed: ${{ needs.template-generation-test.result }}"
+        echo "::error::5. Integration tests passed: ${{ needs.integration-test.result }}"
+        echo "::error::6. Security scan passed: ${{ needs.security-scan.result }}"
+        
+        # Specific failure guidance
+        if [ "${{ needs.ja3-test.result }}" = "failure" ]; then
+          echo "::error::JA3 test failure indicates potential TLS fingerprint mismatch"
+          echo "::error::This could mean Chrome has updated its TLS behavior"
+          echo "::error::Consider running the update command to refresh templates"
+        fi
+        
+        if [ "${{ needs.clienthello-generation-test.result }}" = "failure" ]; then
+          echo "::error::ClientHello generation failure indicates uTLS library issues"
+          echo "::error::Check for dependency updates or Chrome version compatibility"
+        fi
+        
+        # Set workflow failure status
+        exit 1

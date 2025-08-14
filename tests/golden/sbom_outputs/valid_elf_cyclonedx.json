@@ -1,0 +1,48 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:12345678-1234-1234-1234-123456789012",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2024-01-15T10:30:00Z",
+    "tools": [
+      {
+        "vendor": "raven-betanet",
+        "name": "raven-linter",
+        "version": "1.0.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "valid_elf_binary",
+      "version": "unknown"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "libc-1",
+      "name": "libc",
+      "version": "2.31",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "valid_elf_binary",
+      "dependsOn": ["libc-1"]
+    }
+  ]
+}

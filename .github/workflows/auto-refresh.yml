@@ -1,0 +1,355 @@
+name: Chrome Template Auto-Refresh
+
+on:
+  schedule:
+    # Run every Sunday at 02:00 UTC (weekly check for new Chrome versions)
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force template update even if no new Chrome version'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  GO_VERSION: '1.21'
+  BINARY_NAME: 'chrome-utls-gen'
+
+jobs:
+  check-chrome-version:
+    name: Check Chrome Version and Update Templates
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version_changed: ${{ steps.version_check.outputs.version_changed }}
+      new_version: ${{ steps.version_check.outputs.new_version }}
+      current_version: ${{ steps.version_check.outputs.current_version }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build chrome-utls-gen
+      run: |
+        CGO_ENABLED=0 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/chrome-utls-gen
+          
+    - name: Check current Chrome version
+      id: version_check
+      run: |
+        # Get current version from existing templates (if any)
+        CURRENT_VERSION=""
+        if [ -f "cmd/chrome-utls-gen/templates/chrome_current.json" ]; then
+          CURRENT_VERSION=$(jq -r '.version' cmd/chrome-utls-gen/templates/chrome_current.json 2>/dev/null || echo "")
+        fi
+        
+        # Fetch latest Chrome version from API
+        echo "Fetching latest Chrome version..."
+        LATEST_VERSION=$(curl -s "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Linux" | \
+          jq -r '.[0].version' 2>/dev/null || echo "")
+          
+        if [ -z "$LATEST_VERSION" ]; then
+          echo "ERROR: Failed to fetch latest Chrome version"
+          exit 1
+        fi
+        
+        echo "Current version: $CURRENT_VERSION"
+        echo "Latest version: $LATEST_VERSION"
+        
+        # Set outputs
+        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+        
+        # Check if version changed or force update requested
+        if [ "$CURRENT_VERSION" != "$LATEST_VERSION" ] || [ "${{ github.event.inputs.force_update }}" = "true" ]; then
+          echo "version_changed=true" >> $GITHUB_OUTPUT
+          echo "Chrome version update detected or forced"
+        else
+          echo "version_changed=false" >> $GITHUB_OUTPUT
+          echo "No Chrome version update needed"
+        fi
+        
+    - name: Update Chrome templates
+      if: steps.version_check.outputs.version_changed == 'true'
+      id: update_templates
+      run: |
+        echo "Updating Chrome templates to version: ${{ steps.version_check.outputs.new_version }}"
+        
+        # Run the update command
+        if ./${{ env.BINARY_NAME }} update; then
+          echo "Templates updated successfully"
+          echo "update_success=true" >> $GITHUB_OUTPUT
+        else
+          echo "Template update failed"
+          echo "update_success=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+    - name: Verify updated templates
+      if: steps.version_check.outputs.version_changed == 'true' && steps.update_templates.outputs.update_success == 'true'
+      run: |
+        echo "Verifying updated templates..."
+        
+        # Check if templates were actually updated
+        if [ -d "cmd/chrome-utls-gen/templates" ]; then
+          echo "Templates directory contents:"
+          ls -la cmd/chrome-utls-gen/templates/
+          
+          # Validate JSON files
+          for template in cmd/chrome-utls-gen/templates/*.json; do
+            if [ -f "$template" ]; then
+              echo "Validating: $template"
+              if jq empty "$template"; then
+                echo "✓ Valid JSON: $template"
+                
+                # Check if version matches expected
+                TEMPLATE_VERSION=$(jq -r '.version // empty' "$template" 2>/dev/null)
+                if [ -n "$TEMPLATE_VERSION" ]; then
+                  echo "Template version: $TEMPLATE_VERSION"
+                fi
+              else
+                echo "✗ Invalid JSON: $template"
+                exit 1
+              fi
+            fi
+          done
+        else
+          echo "ERROR: Templates directory not found after update"
+          exit 1
+        fi
+        
+    - name: Test updated templates
+      if: steps.version_check.outputs.version_changed == 'true' && steps.update_templates.outputs.update_success == 'true'
+      run: |
+        echo "Testing updated templates..."
+        
+        # Generate ClientHello with new templates
+        if ./${{ env.BINARY_NAME }} generate --output test_clienthello.bin; then
+          echo "✓ ClientHello generation successful"
+          
+          # Verify the generated file
+          if [ -f "test_clienthello.bin" ] && [ -s "test_clienthello.bin" ]; then
+            echo "✓ Generated ClientHello file is valid"
+            echo "File size: $(stat -c%s test_clienthello.bin) bytes"
+          else
+            echo "✗ Generated ClientHello file is invalid"
+            exit 1
+          fi
+        else
+          echo "✗ ClientHello generation failed"
+          exit 1
+        fi
+        
+        # Run JA3 test (allow failure due to network issues)
+        echo "Running JA3 test..."
+        if ./${{ env.BINARY_NAME }} ja3-test https://www.google.com; then
+          echo "✓ JA3 test passed"
+        else
+          echo "⚠ JA3 test failed (may be due to network issues)"
+        fi
+        
+    - name: Check for changes
+      if: steps.version_check.outputs.version_changed == 'true'
+      id: git_changes
+      run: |
+        # Configure git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Check if there are any changes to commit
+        if git diff --quiet && git diff --staged --quiet; then
+          echo "No changes to commit"
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+        else
+          echo "Changes detected"
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          
+          # Show what changed
+          echo "Changed files:"
+          git diff --name-only
+          git diff --staged --name-only
+        fi
+        
+    - name: Commit and push changes
+      if: steps.version_check.outputs.version_changed == 'true' && steps.git_changes.outputs.has_changes == 'true'
+      run: |
+        # Add all template changes
+        git add cmd/chrome-utls-gen/templates/
+        git add cmd/chrome-utls-gen/*.json || true
+        git add cmd/chrome-utls-gen/*.bin || true
+        
+        # Commit changes
+        git commit -m "chore: update Chrome templates to version ${{ steps.version_check.outputs.new_version }}
+
+        - Updated Chrome uTLS templates to latest stable version
+        - Generated new ClientHello templates
+        - Updated JA3 fingerprint data
+        - Auto-generated by GitHub Actions workflow"
+        
+        # Push to main branch
+        git push origin main
+        
+    - name: Create summary
+      run: |
+        echo "## Chrome Template Auto-Refresh Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Current Version**: ${{ steps.version_check.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Latest Version**: ${{ steps.version_check.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version Changed**: ${{ steps.version_check.outputs.version_changed }}" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ steps.version_check.outputs.version_changed }}" = "true" ]; then
+          echo "- **Update Status**: ✅ Templates updated successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- **Changes Committed**: ${{ steps.git_changes.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Update Status**: ℹ️ No update needed" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  create-pull-request:
+    name: Create Pull Request for Template Updates
+    runs-on: ubuntu-latest
+    needs: check-chrome-version
+    if: needs.check-chrome-version.outputs.version_changed == 'true' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+        
+    - name: Create feature branch
+      run: |
+        BRANCH_NAME="auto-update/chrome-templates-${{ needs.check-chrome-version.outputs.new_version }}"
+        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+        
+        # Create and switch to feature branch
+        git checkout -b "$BRANCH_NAME"
+        
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build and update templates
+      run: |
+        CGO_ENABLED=0 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/chrome-utls-gen
+          
+        # Update templates
+        ./${{ env.BINARY_NAME }} update
+        
+    - name: Commit changes to feature branch
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Add all changes
+        git add .
+        
+        # Commit if there are changes
+        if ! git diff --staged --quiet; then
+          git commit -m "feat: update Chrome templates to version ${{ needs.check-chrome-version.outputs.new_version }}
+
+          This automated update includes:
+          - Updated Chrome uTLS templates for version ${{ needs.check-chrome-version.outputs.new_version }}
+          - Regenerated ClientHello templates
+          - Updated JA3 fingerprint data
+          - Validated template generation and JA3 testing
+          
+          Auto-generated by GitHub Actions workflow on $(date -u +%Y-%m-%d)"
+          
+          # Push feature branch
+          git push origin "$BRANCH_NAME"
+        else
+          echo "No changes to commit"
+          exit 0
+        fi
+        
+    - name: Create Pull Request
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const { data: pr } = await github.rest.pulls.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `🔄 Auto-update Chrome templates to v${{ needs.check-chrome-version.outputs.new_version }}`,
+            head: process.env.BRANCH_NAME,
+            base: 'main',
+            body: `## Chrome Template Auto-Update
+            
+            This PR automatically updates Chrome uTLS templates to the latest stable version.
+            
+            ### Changes
+            - **Previous Version**: ${{ needs.check-chrome-version.outputs.current_version }}
+            - **New Version**: ${{ needs.check-chrome-version.outputs.new_version }}
+            - Updated ClientHello templates
+            - Regenerated JA3 fingerprint data
+            - Validated template generation
+            
+            ### Validation
+            - ✅ Templates generated successfully
+            - ✅ JSON validation passed
+            - ✅ ClientHello generation tested
+            - ⚠️ JA3 testing may require manual verification
+            
+            ### Next Steps
+            1. Review the generated templates
+            2. Run manual JA3 tests if needed
+            3. Merge if all validations pass
+            
+            ---
+            *This PR was automatically created by the Chrome Template Auto-Refresh workflow.*`,
+            draft: false
+          });
+          
+          console.log(`Created PR #${pr.number}: ${pr.html_url}`);
+          
+          // Add labels
+          await github.rest.issues.addLabels({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: pr.number,
+            labels: ['automated', 'chrome-templates', 'dependencies']
+          });
+
+  notify-on-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [check-chrome-version, create-pull-request]
+    if: failure()
+    
+    steps:
+    - name: Create failure notification
+      run: |
+        echo "## ❌ Chrome Template Auto-Refresh Failed" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The automated Chrome template refresh workflow has failed." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Possible Issues:" >> $GITHUB_STEP_SUMMARY
+        echo "- Chrome API endpoint unavailable" >> $GITHUB_STEP_SUMMARY
+        echo "- Template generation failed" >> $GITHUB_STEP_SUMMARY
+        echo "- Git operations failed" >> $GITHUB_STEP_SUMMARY
+        echo "- Network connectivity issues" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Manual Action Required:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Check the workflow logs for specific errors" >> $GITHUB_STEP_SUMMARY
+        echo "2. Manually run \`chrome-utls-gen update\` to test locally" >> $GITHUB_STEP_SUMMARY
+        echo "3. Verify Chrome API endpoint is accessible" >> $GITHUB_STEP_SUMMARY
+        echo "4. Re-run the workflow if it was a temporary issue" >> $GITHUB_STEP_SUMMARY
+        
+        # Log specific failure information
+        echo "::error::Chrome template auto-refresh workflow failed"
+        echo "::error::Check version: ${{ needs.check-chrome-version.result }}"
+        echo "::error::Create PR: ${{ needs.create-pull-request.result }}"

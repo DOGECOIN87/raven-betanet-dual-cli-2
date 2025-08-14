@@ -1,0 +1,24 @@
+log_level: "info"
+output_dir: "./output"
+http_timeout: "30s"
+
+chrome:
+  api_endpoint: "https://chromiumdash.appspot.com/fetch_releases"
+  refresh_interval: "7d"
+  target_versions: ["stable", "stable-2"]
+
+linter:
+  sbom_format: "cyclonedx"
+  enabled_checks: [
+    "file_signature",
+    "binary_metadata", 
+    "dependency_analysis",
+    "certificate_validation",
+    "signature_verification",
+    "hash_integrity",
+    "encryption_standards",
+    "security_flags",
+    "version_info",
+    "license_compliance"
+  ]
+  output_format: "json"

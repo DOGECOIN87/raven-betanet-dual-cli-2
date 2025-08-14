@@ -1,0 +1,47 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "valid_elf_binary-sbom",
+  "documentNamespace": "https://raven-betanet.com/spdx/valid_elf_binary-12345678",
+  "creationInfo": {
+    "created": "2024-01-15T10:30:00Z",
+    "creators": ["Tool: raven-linter-1.0.0"]
+  },
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package",
+      "name": "valid_elf_binary",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": true,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        }
+      ],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "SPDXID": "SPDXRef-libc",
+      "name": "libc",
+      "versionInfo": "2.31",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "LGPL-2.1-only",
+      "copyrightText": "NOASSERTION"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-libc"
+    }
+  ]
+}

@@ -1,0 +1,158 @@
+name: Validate Workflows
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  validate-yaml:
+    name: Validate Workflow YAML
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Validate YAML syntax
+      run: |
+        # Install yamllint
+        pip install yamllint
+        
+        # Validate all workflow files
+        echo "Validating workflow YAML files..."
+        for workflow in .github/workflows/*.yml; do
+          echo "Validating: $workflow"
+          yamllint "$workflow"
+        done
+        
+    - name: Check workflow structure
+      run: |
+        # Basic structure validation
+        for workflow in .github/workflows/*.yml; do
+          echo "Checking structure of: $workflow"
+          
+          # Check for required fields
+          if ! grep -q "^name:" "$workflow"; then
+            echo "ERROR: Missing 'name' field in $workflow"
+            exit 1
+          fi
+          
+          if ! grep -q "^on:" "$workflow"; then
+            echo "ERROR: Missing 'on' field in $workflow"
+            exit 1
+          fi
+          
+          if ! grep -q "^jobs:" "$workflow"; then
+            echo "ERROR: Missing 'jobs' field in $workflow"
+            exit 1
+          fi
+          
+          echo "✓ Structure valid for $workflow"
+        done
+        
+    - name: Validate workflow references
+      run: |
+        echo "Validating workflow references..."
+        
+        # Check for common issues
+        for workflow in .github/workflows/*.yml; do
+          echo "Checking references in: $workflow"
+          
+          # Check for valid action versions
+          if grep -q "uses:.*@v[0-9]" "$workflow"; then
+            echo "✓ Found versioned actions in $workflow"
+          fi
+          
+          # Check for environment variable usage
+          if grep -q "\${{" "$workflow"; then
+            echo "✓ Found GitHub expressions in $workflow"
+          fi
+          
+          # Check for secrets usage (should be minimal)
+          if grep -q "secrets\." "$workflow"; then
+            echo "⚠ Found secrets usage in $workflow - ensure they're necessary"
+          fi
+        done
+
+  test-workflow-triggers:
+    name: Test Workflow Triggers
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Analyze trigger conditions
+      run: |
+        echo "Analyzing workflow triggers..."
+        
+        # Check spec-linter workflow
+        if [ -f ".github/workflows/spec-linter.yml" ]; then
+          echo "Spec-linter workflow triggers:"
+          grep -A 10 "^on:" .github/workflows/spec-linter.yml
+          echo ""
+        fi
+        
+        # Check chrome-utls-gen workflow
+        if [ -f ".github/workflows/chrome-utls-gen.yml" ]; then
+          echo "Chrome-utls-gen workflow triggers:"
+          grep -A 10 "^on:" .github/workflows/chrome-utls-gen.yml
+          echo ""
+        fi
+        
+        # Check auto-refresh workflow
+        if [ -f ".github/workflows/auto-refresh.yml" ]; then
+          echo "Auto-refresh workflow triggers:"
+          grep -A 10 "^on:" .github/workflows/auto-refresh.yml
+          echo ""
+        fi
+        
+    - name: Validate cron schedules
+      run: |
+        echo "Validating cron schedules..."
+        
+        # Check auto-refresh cron
+        if grep -q "cron:" .github/workflows/auto-refresh.yml; then
+          CRON_EXPR=$(grep "cron:" .github/workflows/auto-refresh.yml | sed "s/.*cron: *'//" | sed "s/'.*//")
+          echo "Found cron expression: $CRON_EXPR"
+          
+          # Basic validation (5 fields)
+          FIELD_COUNT=$(echo "$CRON_EXPR" | wc -w)
+          if [ "$FIELD_COUNT" -eq 5 ]; then
+            echo "✓ Cron expression has correct number of fields"
+          else
+            echo "✗ Cron expression has incorrect number of fields: $FIELD_COUNT"
+            exit 1
+          fi
+        fi
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validate-yaml, test-workflow-triggers]
+    if: always()
+    
+    steps:
+    - name: Create summary
+      run: |
+        echo "## Workflow Validation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Results:" >> $GITHUB_STEP_SUMMARY
+        echo "- **YAML Validation**: ${{ needs.validate-yaml.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Trigger Testing**: ${{ needs.test-workflow-triggers.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ needs.validate-yaml.result }}" = "success" ] && [ "${{ needs.test-workflow-triggers.result }}" = "success" ]; then
+          echo "✅ All workflow validations passed!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Some workflow validations failed. Check the logs above." >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Workflows Validated:" >> $GITHUB_STEP_SUMMARY
+        echo "- spec-linter.yml - CI/CD for raven-linter tool" >> $GITHUB_STEP_SUMMARY
+        echo "- chrome-utls-gen.yml - CI/CD for chrome-utls-gen tool" >> $GITHUB_STEP_SUMMARY
+        echo "- auto-refresh.yml - Automated Chrome template updates" >> $GITHUB_STEP_SUMMARY
+        echo "- validate-workflows.yml - Workflow validation (this workflow)" >> $GITHUB_STEP_SUMMARY

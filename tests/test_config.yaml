@@ -1,0 +1,190 @@
+# Test Configuration for Raven Betanet Dual CLI
+# This file contains configuration settings for the test suite
+
+# Test execution settings
+execution:
+  # Default timeout for test operations
+  default_timeout: "30s"
+  
+  # Timeout for long-running operations (network, large files)
+  long_timeout: "2m"
+  
+  # Timeout for short operations
+  short_timeout: "5s"
+  
+  # Maximum parallel test execution
+  max_parallel: 4
+
+# Network test settings
+network:
+  # Skip network tests if connectivity issues
+  skip_on_failure: true
+  
+  # Default test targets for JA3 testing
+  test_targets:
+    - "example.com:443"
+    - "httpbin.org:443"
+  
+  # Connection timeout for network tests
+  connection_timeout: "10s"
+  
+  # Retry attempts for network operations
+  retry_attempts: 3
+
+# File size limits for test fixtures
+file_limits:
+  # Maximum size for test binaries (in bytes)
+  max_binary_size: 10485760  # 10MB
+  
+  # Maximum size for generated outputs
+  max_output_size: 1048576   # 1MB
+  
+  # Maximum size for SBOM files
+  max_sbom_size: 2097152     # 2MB
+
+# Golden file settings
+golden_files:
+  # Update golden files when environment variable is set
+  update_env_var: "UPDATE_GOLDEN"
+  
+  # Golden file directories
+  directories:
+    chrome_handshakes: "tests/golden/chrome_handshakes"
+    compliance_results: "tests/golden/compliance_results"
+    sbom_outputs: "tests/golden/sbom_outputs"
+
+# Test fixture settings
+fixtures:
+  # Sample binary directory
+  sample_binaries_dir: "tests/fixtures/sample_binaries"
+  
+  # Test configuration directory
+  test_configs_dir: "tests/fixtures/test_configs"
+  
+  # Required test fixtures
+  required_files:
+    - "tests/fixtures/sample_binaries/valid_elf_binary"
+    - "tests/fixtures/sample_binaries/invalid_elf_binary"
+    - "tests/fixtures/sample_binaries/corrupted_binary"
+    - "tests/fixtures/test_configs/valid_config.yaml"
+    - "tests/fixtures/test_configs/minimal_config.yaml"
+
+# Performance test settings
+performance:
+  # Expected maximum execution times
+  max_execution_times:
+    chrome_generate: "30s"
+    raven_check: "60s"
+    raven_check_with_sbom: "90s"
+    ja3_test: "30s"
+    template_update: "120s"
+  
+  # Memory usage limits (approximate)
+  memory_limits:
+    max_heap_size: "256MB"
+    max_output_buffer: "10MB"
+
+# CI/CD simulation settings
+cicd:
+  # Artifacts directory for CI simulation
+  artifacts_dir: "artifacts"
+  
+  # Required CI artifacts
+  required_artifacts:
+    - "clienthello.bin"
+    - "compliance_report.json"
+    - "sbom.json"
+    - "ci_summary.json"
+  
+  # CI pipeline steps
+  pipeline_steps:
+    - "tls_template_update"
+    - "clienthello_generation"
+    - "compliance_checking"
+    - "sbom_generation"
+    - "artifact_validation"
+
+# Logging settings for tests
+logging:
+  # Log level for test execution
+  level: "info"
+  
+  # Enable verbose logging for debugging
+  verbose: false
+  
+  # Log file for test results
+  log_file: "test_results.log"
+  
+  # Include performance metrics in logs
+  include_metrics: true
+
+# Chrome version settings for testing
+chrome_versions:
+  # Default Chrome versions for testing
+  test_versions:
+    - "120.0.6099.109"
+    - "119.0.6045.105"
+    - "118.0.5993.117"
+  
+  # Chrome version API settings
+  api:
+    base_url: "https://chromiumdash.appspot.com"
+    timeout: "30s"
+    retry_attempts: 3
+
+# Compliance check settings
+compliance:
+  # Expected number of compliance checks
+  total_checks: 11
+  
+  # Check categories
+  categories:
+    binary_analysis: [1, 2, 3, 4]
+    crypto_validation: [5, 6, 7, 8]
+    security_metadata: [9, 10, 11]
+  
+  # Check IDs and descriptions
+  checks:
+    "check-001": "File Signature Validation"
+    "check-002": "Binary Metadata Analysis"
+    "check-003": "Dependency Analysis"
+    "check-004": "Binary Format Validation"
+    "check-005": "Certificate Validation"
+    "check-006": "Signature Verification"
+    "check-007": "Hash Integrity Check"
+    "check-008": "Encryption Standard Compliance"
+    "check-009": "Security Flag Validation"
+    "check-010": "Version Information Check"
+    "check-011": "License Compliance Check"
+
+# SBOM generation settings
+sbom:
+  # Supported SBOM formats
+  supported_formats:
+    - "cyclonedx"
+    - "spdx"
+  
+  # Default SBOM format
+  default_format: "cyclonedx"
+  
+  # SBOM validation settings
+  validation:
+    require_components: true
+    require_metadata: true
+    require_licenses: false
+    
+# Test environment settings
+environment:
+  # Temporary directory prefix
+  temp_dir_prefix: "raven-betanet-test-"
+  
+  # Cleanup settings
+  cleanup:
+    # Clean up temporary files after tests
+    auto_cleanup: true
+    
+    # Keep test artifacts on failure for debugging
+    keep_on_failure: true
+    
+    # Maximum age for temporary files
+    max_temp_age: "24h"

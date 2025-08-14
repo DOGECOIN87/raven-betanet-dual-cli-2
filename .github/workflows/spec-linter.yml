@@ -1,0 +1,297 @@
+name: Spec-Linter CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'cmd/raven-linter/**'
+      - 'internal/checks/**'
+      - 'internal/sbom/**'
+      - 'internal/utils/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/spec-linter.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'cmd/raven-linter/**'
+      - 'internal/checks/**'
+      - 'internal/sbom/**'
+      - 'internal/utils/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/spec-linter.yml'
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+  BINARY_NAME: 'raven-linter'
+
+jobs:
+  test:
+    name: Test and Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+          
+    - name: Download dependencies
+      run: go mod download
+      
+    - name: Run unit tests
+      run: |
+        go test -v -race -coverprofile=coverage.out ./internal/checks/...
+        go test -v -race -coverprofile=coverage-sbom.out ./internal/sbom/...
+        go test -v -race -coverprofile=coverage-utils.out ./internal/utils/...
+        go test -v -race -coverprofile=coverage-main.out ./cmd/raven-linter/...
+        
+    - name: Generate coverage report
+      run: |
+        go tool cover -html=coverage.out -o coverage.html
+        go tool cover -func=coverage.out
+        
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: |
+          coverage.out
+          coverage.html
+          
+    - name: Build raven-linter
+      run: |
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/raven-linter
+          
+    - name: Verify binary
+      run: |
+        ./${{ env.BINARY_NAME }} --version
+        ./${{ env.BINARY_NAME }} --help
+
+  compliance-test:
+    name: Compliance Check Testing
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build raven-linter
+      run: |
+        CGO_ENABLED=0 go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o ${{ env.BINARY_NAME }} \
+          ./cmd/raven-linter
+          
+    - name: Create test binary fixtures
+      run: |
+        # Create a simple valid ELF binary for testing
+        echo 'package main; import "fmt"; func main() { fmt.Println("test") }' > test.go
+        go build -o test_binary test.go
+        
+        # Create an invalid binary for failure testing
+        echo "invalid binary content" > invalid_binary
+        
+    - name: Run compliance checks on valid binary
+      id: valid_check
+      run: |
+        ./${{ env.BINARY_NAME }} check test_binary --format json > compliance_results.json
+        echo "valid_check_exit_code=$?" >> $GITHUB_OUTPUT
+        cat compliance_results.json
+        
+    - name: Run compliance checks on invalid binary
+      id: invalid_check
+      continue-on-error: true
+      run: |
+        ./${{ env.BINARY_NAME }} check invalid_binary --format json > invalid_compliance_results.json
+        echo "invalid_check_exit_code=$?" >> $GITHUB_OUTPUT
+        
+    - name: Validate compliance check behavior
+      run: |
+        # Valid binary should pass (exit code 0)
+        if [ "${{ steps.valid_check.outputs.valid_check_exit_code }}" != "0" ]; then
+          echo "ERROR: Valid binary compliance check should pass"
+          exit 1
+        fi
+        
+        # Invalid binary should fail (exit code 1)
+        if [ "${{ steps.invalid_check.outputs.invalid_check_exit_code }}" != "1" ]; then
+          echo "ERROR: Invalid binary compliance check should fail"
+          exit 1
+        fi
+        
+        echo "Compliance check behavior validated successfully"
+        
+    - name: Validate SBOM generation
+      run: |
+        # Check if SBOM was generated
+        if [ ! -f "sbom.json" ]; then
+          echo "ERROR: SBOM file was not generated"
+          exit 1
+        fi
+        
+        # Validate SBOM is valid JSON
+        if ! jq empty sbom.json; then
+          echo "ERROR: SBOM is not valid JSON"
+          exit 1
+        fi
+        
+        # Check for required SBOM fields
+        if ! jq -e '.components' sbom.json > /dev/null; then
+          echo "ERROR: SBOM missing components field"
+          exit 1
+        fi
+        
+        echo "SBOM validation passed"
+        
+    - name: Upload compliance artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: compliance-results
+        path: |
+          compliance_results.json
+          invalid_compliance_results.json
+          sbom.json
+          
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Run integration tests
+      run: |
+        go test -v -tags=integration ./tests/integration/...
+        
+    - name: Upload integration test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: integration-test-results
+        path: |
+          tests/integration/results/
+          
+  build-cross-platform:
+    name: Cross-Platform Build
+    runs-on: ubuntu-latest
+    needs: [test, compliance-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+            
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        
+    - name: Build binary
+      run: |
+        BINARY_NAME="${{ env.BINARY_NAME }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          BINARY_NAME="${BINARY_NAME}.exe"
+        fi
+        
+        CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build \
+          -ldflags="-w -s -X main.version=${{ github.sha }} -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          -o "${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}" \
+          ./cmd/raven-linter
+          
+    - name: Generate checksums
+      run: |
+        BINARY_NAME="${{ env.BINARY_NAME }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          BINARY_NAME="${BINARY_NAME}.exe"
+        fi
+        
+        sha256sum "${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}" > "${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256"
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: raven-linter-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: |
+          raven-linter*-${{ matrix.goos }}-${{ matrix.goarch }}*
+          
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Gosec Security Scanner
+      uses: securecodewarrior/github-action-gosec@master
+      with:
+        args: '-fmt sarif -out gosec-results.sarif ./...'
+        
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: gosec-results.sarif
+        
+    - name: Run govulncheck
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
+  failure-notification:
+    name: Failure Notification
+    runs-on: ubuntu-latest
+    needs: [test, compliance-test, integration-test, security-scan]
+    if: failure()
+    
+    steps:
+    - name: Notify on failure
+      run: |
+        echo "::error::Spec-linter workflow failed. Check the following:"
+        echo "::error::1. Unit tests passed: ${{ needs.test.result }}"
+        echo "::error::2. Compliance tests passed: ${{ needs.compliance-test.result }}"
+        echo "::error::3. Integration tests passed: ${{ needs.integration-test.result }}"
+        echo "::error::4. Security scan passed: ${{ needs.security-scan.result }}"
+        
+        # Set workflow failure status
+        exit 1

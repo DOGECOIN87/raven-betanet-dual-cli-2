@@ -1,0 +1,77 @@
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "binary_path": "tests/fixtures/sample_binaries/valid_elf_binary",
+  "binary_hash": "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+  "total_checks": 11,
+  "passed_checks": 11,
+  "failed_checks": 0,
+  "results": [
+    {
+      "check_id": "file_signature",
+      "description": "Validate file signature and format",
+      "status": "pass",
+      "details": "Valid ELF binary detected"
+    },
+    {
+      "check_id": "binary_metadata",
+      "description": "Extract and validate binary metadata",
+      "status": "pass",
+      "details": "Binary metadata extracted successfully"
+    },
+    {
+      "check_id": "dependency_analysis",
+      "description": "Analyze binary dependencies",
+      "status": "pass",
+      "details": "Dependencies analyzed and validated"
+    },
+    {
+      "check_id": "certificate_validation",
+      "description": "Validate embedded certificates",
+      "status": "pass",
+      "details": "No certificates found (acceptable for test binary)"
+    },
+    {
+      "check_id": "signature_verification",
+      "description": "Verify digital signatures",
+      "status": "pass",
+      "details": "No signatures found (acceptable for test binary)"
+    },
+    {
+      "check_id": "hash_integrity",
+      "description": "Verify hash integrity",
+      "status": "pass",
+      "details": "Hash integrity verified"
+    },
+    {
+      "check_id": "encryption_standards",
+      "description": "Check encryption standard compliance",
+      "status": "pass",
+      "details": "No encryption detected (acceptable for test binary)"
+    },
+    {
+      "check_id": "security_flags",
+      "description": "Validate security flags",
+      "status": "pass",
+      "details": "Security flags validated"
+    },
+    {
+      "check_id": "version_info",
+      "description": "Extract version information",
+      "status": "pass",
+      "details": "Version information extracted"
+    },
+    {
+      "check_id": "license_compliance",
+      "description": "Check license compliance",
+      "status": "pass",
+      "details": "License compliance verified"
+    },
+    {
+      "check_id": "build_metadata",
+      "description": "Validate build metadata",
+      "status": "pass",
+      "details": "Build metadata validated"
+    }
+  ],
+  "sbom_path": "sbom.json"
+}

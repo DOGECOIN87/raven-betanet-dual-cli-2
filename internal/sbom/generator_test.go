@@ -222,7 +222,7 @@ func TestGenerator_WriteToFile_UnsupportedFormat(t *testing.T) {
 	outputPath := filepath.Join(tempDir, "test-sbom.json")
 	
 	// Create a test SBOM with unsupported format
-	sbom := NewSBOM(SBOMFormat(999))
+	sbom := NewSBOM(SBOMFormat("unsupported"))
 	
 	generator := NewGenerator()
 	err := generator.WriteToFile(sbom, outputPath)

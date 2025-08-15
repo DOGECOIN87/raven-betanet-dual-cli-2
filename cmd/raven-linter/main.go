@@ -4,610 +4,347 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
-
+	
 	"github.com/raven-betanet/dual-cli/internal/checks"
 	"github.com/raven-betanet/dual-cli/internal/sbom"
 	"github.com/raven-betanet/dual-cli/internal/utils"
 )
 
 var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
-)
-
-// CLI flags
-var (
-	outputFormat string
-	logLevel     string
-	verbose      bool
-	sbomFormat   string
-	sbomOutput   string
-	generateSBOM bool
+	// Version information (set via ldflags during build)
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
 )
 
 func main() {
-	rootCmd := &cobra.Command{
-		Use:   "raven-linter",
-		Short: "Raven Betanet 1.1 Spec-Compliance Linter CLI",
-		Long: `A command-line utility to run all 11 compliance checks described in §11 
-of the Raven Betanet 1.1 spec against a candidate binary, generate a Software 
-Bill of Materials (SBOM), and integrate into CI/CD via GitHub Actions.
-
-The tool validates binaries against mandatory compliance requirements including:
-• Binary analysis (file signature, metadata, dependencies, format)
-• Cryptographic validation (certificates, signatures, hashes, encryption)
-• Security and metadata checks (flags, version info, license compliance)
-
-For detailed documentation, visit: https://github.com/raven-betanet/dual-cli
-
-Examples:
-  # Run all compliance checks on a binary
-  raven-linter check ./my-binary
-
-  # Output results in JSON format for CI/CD integration
-  raven-linter check ./my-binary --format json
-
-  # Generate SBOM alongside compliance checks
-  raven-linter check ./my-binary --sbom --sbom-format cyclonedx
-
-  # Enable verbose logging for troubleshooting
-  raven-linter check ./my-binary --verbose
-
-  # Check for updates
-  raven-linter update --check-only`,
-		Version: fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// Initialize logger based on flags
-			loggerConfig := utils.LoggerConfig{
-				Level:  utils.LogLevel(logLevel),
-				Format: utils.LogFormatText,
-			}
-			if verbose {
-				loggerConfig.Level = utils.LogLevelDebug
-			}
-			logger := utils.NewLogger(loggerConfig)
-			
-			// Store logger in context for use by subcommands
-			cmd.SetContext(utils.WithLogger(cmd.Context(), logger))
-			return nil
-		},
-	}
-
-	// Add version template
-	rootCmd.SetVersionTemplate(`{{printf "%s\n" .Version}}`)
-
-	// Add persistent flags
-	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Set log level (debug, info, warn, error)")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output (equivalent to --log-level debug)")
-
-	// Add subcommands
-	rootCmd.AddCommand(newCheckCommand())
-	rootCmd.AddCommand(newUpdateCommand())
-
-	// Show help when run without arguments
-	rootCmd.Run = func(cmd *cobra.Command, args []string) {
-		fmt.Printf("Raven Betanet 1.1 Spec-Compliance Linter\n")
-		fmt.Printf("=========================================\n\n")
-		fmt.Printf("Run compliance checks against binaries and generate SBOMs.\n\n")
-		fmt.Printf("Quick Start:\n")
-		fmt.Printf("  %s check ./my-binary                    # Run all compliance checks\n", cmd.Name())
-		fmt.Printf("  %s check ./my-binary --format json     # JSON output for CI/CD\n", cmd.Name())
-		fmt.Printf("  %s check ./my-binary --sbom             # Generate SBOM\n", cmd.Name())
-		fmt.Printf("  %s update                               # Check for updates\n\n", cmd.Name())
-		fmt.Printf("For detailed help: %s --help\n", cmd.Name())
-		fmt.Printf("For command help: %s <command> --help\n\n", cmd.Name())
-		fmt.Printf("Available Commands:\n")
-		for _, subCmd := range cmd.Commands() {
-			if !subCmd.Hidden {
-				fmt.Printf("  %-12s %s\n", subCmd.Name(), subCmd.Short)
-			}
-		}
-		fmt.Printf("\nDocumentation: https://github.com/raven-betanet/dual-cli\n")
-	}
-
-	if err := rootCmd.Execute(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// newCheckCommand creates the check subcommand
-func newCheckCommand() *cobra.Command {
+func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "check <binary-path>",
-		Short: "Run compliance checks against a binary",
-		Long: `Run all 11 compliance checks from §11 of the Raven Betanet 1.1 spec 
-against the specified binary and generate a compliance report.
+		Use:   "raven-linter",
+		Short: "Raven Betanet 1.1 compliance linter",
+		Long: `raven-linter validates binaries against all 11 compliance checks from §11 of the 
+Raven Betanet 1.1 specification and generates Software Bill of Materials (SBOM) in 
+industry-standard formats.
 
-COMPLIANCE CHECKS:
-  Binary Analysis (1-4):
-    • File signature validation
-    • Binary metadata extraction  
-    • Dependency analysis
-    • Binary format compliance
+The tool performs comprehensive binary analysis including:
+- Binary format validation (ELF, PE, Mach-O)
+- Architecture and metadata extraction  
+- Dependency analysis
+- Cryptographic validation
+- Security flag analysis
+- License compliance checking
 
-  Cryptographic Validation (5-8):
-    • Certificate validation
-    • Signature verification
-    • Hash integrity checks
-    • Encryption standard compliance
-
-  Security & Metadata (9-11):
-    • Security flag validation
-    • Version information extraction
-    • License compliance verification
-
-OUTPUT FORMATS:
-  • text - Human-readable formatted output (default)
-  • json - Machine-readable JSON for CI/CD integration
-
-SBOM GENERATION:
-  Generate Software Bill of Materials alongside compliance checks:
-  • cyclonedx - CycloneDX v1.5 JSON format (default)
-  • spdx - SPDX 2.3 JSON format
-
-EXIT CODES:
-  • 0 - All compliance checks passed
-  • 1 - One or more compliance checks failed
-  • 2 - Invalid arguments or configuration error
-
-Examples:
-  # Basic compliance check
-  raven-linter check ./my-binary
-
-  # JSON output for CI/CD integration
-  raven-linter check ./my-binary --format json
-
-  # Generate SBOM with compliance checks
-  raven-linter check ./my-binary --sbom
-
-  # Custom SBOM format and location
-  raven-linter check ./my-binary --sbom --sbom-format spdx --sbom-output ./reports/sbom.json
-
-  # Verbose output for troubleshooting
-  raven-linter check ./my-binary --verbose
-
-  # Multiple options combined
-  raven-linter check ./my-binary --format json --sbom --verbose`,
-		Args: cobra.ExactArgs(1),
-		RunE: runCheckCommand,
+Results can be output in human-readable text or machine-readable JSON formats
+for integration with CI/CD pipelines.`,
+		Version: fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, buildDate),
 	}
 
-	// Add command-specific flags
-	cmd.Flags().StringVarP(&outputFormat, "format", "f", "text", "Output format (json, text)")
-	cmd.Flags().BoolVar(&generateSBOM, "sbom", false, "Generate Software Bill of Materials (SBOM)")
-	cmd.Flags().StringVar(&sbomFormat, "sbom-format", "cyclonedx", "SBOM format (cyclonedx, spdx)")
-	cmd.Flags().StringVar(&sbomOutput, "sbom-output", "sbom.json", "SBOM output file path")
+	// Add subcommands
+	cmd.AddCommand(newCheckCmd())
+	cmd.AddCommand(newVersionCmd())
 
 	return cmd
 }
 
-// runCheckCommand executes the check command
-func runCheckCommand(cmd *cobra.Command, args []string) error {
-	binaryPath := args[0]
+func newCheckCmd() *cobra.Command {
+	var (
+		outputFormat string
+		generateSBOM bool
+		sbomFormat   string
+		configFile   string
+		verbose      bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "check <binary>",
+		Short: "Run compliance checks against a binary",
+		Long: `Run all 11 compliance checks from Raven Betanet 1.1 §11 against the specified binary.
+
+The check command validates:
+1. Binary format validation (ELF, PE, Mach-O detection)
+2. Architecture validation (extract architecture info)
+3. Entry point & section validation (verify .text/.data sections)
+4. Dependency analysis (list linked libraries)
+5. Certificate presence (extract embedded certificates)
+6. Certificate validity (validate against system roots)
+7. Digital signature verification (verify binary signatures)
+8. Hash verification (SHA256/SHA512 integrity checks)
+9. Security flags (NX, RELRO, PIE for ELF; DEP, ASLR for PE)
+10. Version metadata (extract version information)
+11. License compliance (scan for license information)
+
+Exit codes:
+  0 - All checks passed
+  1 - One or more checks failed
+  2 - Invalid arguments or configuration error`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runComplianceChecks(args[0], outputFormat, generateSBOM, sbomFormat, configFile, verbose)
+		},
+	}
+
+	cmd.Flags().StringVarP(&outputFormat, "format", "f", "text", "Output format (text, json)")
+	cmd.Flags().BoolVar(&generateSBOM, "sbom", false, "Generate SBOM file")
+	cmd.Flags().StringVar(&sbomFormat, "sbom-format", "cyclonedx", "SBOM format (cyclonedx, spdx)")
+	cmd.Flags().StringVarP(&configFile, "config", "c", "", "Configuration file path")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+
+	return cmd
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Show version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("raven-linter version %s\n", version)
+			fmt.Printf("Commit: %s\n", commit)
+			fmt.Printf("Built: %s\n", buildDate)
+		},
+	}
+}
+
+// runComplianceChecks executes all compliance checks and generates SBOM if requested
+func runComplianceChecks(binaryPath, outputFormat string, generateSBOM bool, sbomFormat, configFile string, verbose bool) error {
+	// Load configuration
+	var config *utils.Config
+	var err error
 	
-	// Get logger from context
-	logger := utils.LoggerFromContext(cmd.Context())
-	if logger == nil {
-		logger = utils.NewDefaultLogger()
+	if configFile != "" {
+		config, err = utils.LoadConfigFromFile(configFile)
+	} else {
+		config, err = utils.LoadDefaultConfig()
 	}
-
-	// Validate output format
-	if !isValidOutputFormat(outputFormat) {
-		return fmt.Errorf("invalid output format '%s'\n\nSupported formats:\n  • json - Machine-readable JSON output for CI/CD integration\n  • text - Human-readable formatted output (default)\n\nExample: --format json", outputFormat)
-	}
-
-	// Validate SBOM format if SBOM generation is enabled
-	if generateSBOM {
-		if !isValidSBOMFormat(sbomFormat) {
-			return fmt.Errorf("invalid SBOM format '%s'\n\nSupported SBOM formats:\n  • cyclonedx - CycloneDX v1.5 JSON format (default)\n  • spdx - SPDX 2.3 JSON format\n\nExample: --sbom-format spdx", sbomFormat)
-		}
-		
-		// Validate SBOM output path
-		if sbomOutput == "" {
-			return fmt.Errorf("SBOM output path cannot be empty when SBOM generation is enabled\n\nPlease specify an output path:\n  Example: --sbom-output ./my-sbom.json")
-		}
-		
-		// Convert to absolute path
-		absSBOMPath, err := filepath.Abs(sbomOutput)
-		if err != nil {
-			return fmt.Errorf("failed to resolve SBOM output path '%s': %w\n\nTroubleshooting:\n  • Check if the directory exists\n  • Verify write permissions\n  • Use an absolute path", sbomOutput, err)
-		}
-		sbomOutput = absSBOMPath
-	}
-
-	// Validate binary path exists and is accessible
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		return fmt.Errorf("binary file not found: %s\n\nTroubleshooting:\n  • Check if the file path is correct\n  • Verify the file exists\n  • Use an absolute path if needed\n\nExample: ./my-binary or /path/to/my-binary", binaryPath)
-	} else if err != nil {
-		return fmt.Errorf("cannot access binary file '%s': %w\n\nTroubleshooting:\n  • Check file permissions (should be readable)\n  • Verify the file is not corrupted\n  • Try with sudo if permission denied", binaryPath, err)
-	}
-
-	// Validate binary path
-	absPath, err := filepath.Abs(binaryPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve binary path '%s': %w\n\nTroubleshooting:\n  • Check if the path contains invalid characters\n  • Try using a simpler path\n  • Use forward slashes on Windows", binaryPath, err)
+		return fmt.Errorf("failed to load configuration: %w", err)
 	}
-
-	logger.WithComponent("check").Infof("Running compliance checks on binary: %s", absPath)
-	if generateSBOM {
-		logger.WithComponent("check").Infof("SBOM generation enabled: format=%s, output=%s", sbomFormat, sbomOutput)
+	
+	// Create logger
+	loggerConfig := utils.LoggerConfig{
+		Level:  utils.LogLevel(config.LogLevel),
+		Format: utils.LogFormat(config.LogFormat),
 	}
-
+	if verbose {
+		loggerConfig.Level = utils.LogLevelDebug
+	}
+	logger := utils.NewLogger(loggerConfig)
+	
+	// Validate binary file exists
+	if _, err := os.Stat(binaryPath); err != nil {
+		return fmt.Errorf("binary file not found: %s", binaryPath)
+	}
+	
+	logger.WithComponent("raven-linter").Infof("Starting compliance checks for: %s", binaryPath)
+	
 	// Create check registry and register all checks
 	registry := checks.NewCheckRegistry()
-	if err := registerAllChecks(registry); err != nil {
-		return fmt.Errorf("failed to register checks: %w", err)
-	}
-
-	logger.WithComponent("check").Debugf("Registered %d compliance checks", registry.Count())
-
-	// Create check runner
-	runner := checks.NewCheckRunner(registry)
 	
-	// Show progress if not in JSON output mode
-	if strings.ToLower(outputFormat) != "json" {
-		fmt.Printf("Running %d compliance checks", registry.Count())
-		if generateSBOM {
-			fmt.Printf(" and generating SBOM")
+	// Register all 11 compliance checks
+	allChecks := []checks.ComplianceCheck{
+		// Binary analysis checks (1-4)
+		&checks.FileSignatureCheck{},
+		&checks.BinaryMetadataCheck{},
+		&checks.DependencyAnalysisCheck{},
+		&checks.BinaryFormatCheck{},
+		
+		// Cryptographic validation checks (5-8)
+		&checks.CertificateValidationCheck{},
+		&checks.SignatureVerificationCheck{},
+		&checks.HashIntegrityCheck{},
+		&checks.EncryptionStandardCheck{},
+		
+		// Security and metadata checks (9-11)
+		&checks.SecurityFlagValidationCheck{},
+		&checks.VersionInformationCheck{},
+		&checks.LicenseComplianceCheck{},
+	}
+	
+	for _, check := range allChecks {
+		if err := registry.Register(check); err != nil {
+			return fmt.Errorf("failed to register check %s: %w", check.ID(), err)
 		}
-		fmt.Printf("...\n")
 	}
 	
-	// Run compliance checks and SBOM generation concurrently
-	var report *checks.ComplianceReport
-	var sbomPath string
-	var wg sync.WaitGroup
-	var checkErr, sbomErr error
+	// Create check runner and execute all checks
+	runner := checks.NewCheckRunner(registry)
+	report, err := runner.RunAll(binaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to run compliance checks: %w", err)
+	}
 	
-	// Start compliance checks
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		report, checkErr = runner.RunAll(absPath)
-	}()
-	
-	// Start SBOM generation if enabled
+	// Generate SBOM if requested
+	var sbomInfo *sbom.SBOMInfo
 	if generateSBOM {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sbomPath, sbomErr = generateSBOMFile(absPath, sbomFormat, sbomOutput, logger)
-		}()
+		sbomInfo, err = generateSBOMFile(binaryPath, sbomFormat, logger)
+		if err != nil {
+			logger.WithComponent("raven-linter").Warnf("SBOM generation failed: %v", err)
+			// Continue with compliance checks even if SBOM fails
+		}
 	}
 	
-	// Wait for both operations to complete
-	wg.Wait()
-	
-	// Check for errors
-	if checkErr != nil {
-		return fmt.Errorf("failed to run compliance checks: %w", checkErr)
+	// Output results
+	if err := outputResults(report, sbomInfo, outputFormat); err != nil {
+		return fmt.Errorf("failed to output results: %w", err)
 	}
 	
-	if generateSBOM && sbomErr != nil {
-		logger.WithComponent("sbom").Warnf("SBOM generation failed: %v", sbomErr)
-		// Don't fail the entire command if SBOM generation fails, just warn
-	} else if generateSBOM && sbomPath != "" {
-		// Add SBOM path to report
-		report.SBOMPath = sbomPath
-		logger.WithComponent("sbom").Infof("SBOM generated successfully: %s", sbomPath)
-	}
-
-	logger.WithComponent("check").Infof("Completed %d checks in %v", report.TotalChecks, report.Duration)
-
-	// Output results in requested format
-	if err := outputReport(report, outputFormat); err != nil {
-		return fmt.Errorf("failed to output report: %w", err)
-	}
-
-	// Exit with error code if any checks failed
-	if !report.IsReportPassing() {
-		logger.WithComponent("check").Warnf("Compliance check failed: %d/%d checks passed", report.PassedChecks, report.TotalChecks)
+	// Determine exit code based on results
+	if report.FailedChecks > 0 {
+		logger.WithComponent("raven-linter").Errorf("Compliance checks failed: %d/%d checks passed", 
+			report.PassedChecks, report.TotalChecks)
 		os.Exit(1)
 	}
-
-	logger.WithComponent("check").Infof("All compliance checks passed: %d/%d", report.PassedChecks, report.TotalChecks)
+	
+	logger.WithComponent("raven-linter").Infof("All compliance checks passed: %d/%d", 
+		report.PassedChecks, report.TotalChecks)
 	return nil
 }
 
-// registerAllChecks registers all available compliance checks
-func registerAllChecks(registry *checks.CheckRegistry) error {
-	// Binary analysis checks (checks 1-4)
-	if err := registry.Register(&checks.FileSignatureCheck{}); err != nil {
-		return fmt.Errorf("failed to register file signature check: %w", err)
-	}
+// generateSBOMFile generates an SBOM file in the specified format
+func generateSBOMFile(binaryPath, format string, logger *utils.Logger) (*sbom.SBOMInfo, error) {
+	logger.WithComponent("sbom").Infof("Generating SBOM in %s format", format)
 	
-	if err := registry.Register(&checks.BinaryMetadataCheck{}); err != nil {
-		return fmt.Errorf("failed to register binary metadata check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.DependencyAnalysisCheck{}); err != nil {
-		return fmt.Errorf("failed to register dependency analysis check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.BinaryFormatCheck{}); err != nil {
-		return fmt.Errorf("failed to register binary format check: %w", err)
-	}
-	
-	// Cryptographic validation checks (checks 5-8)
-	if err := registry.Register(&checks.CertificateValidationCheck{}); err != nil {
-		return fmt.Errorf("failed to register certificate validation check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.SignatureVerificationCheck{}); err != nil {
-		return fmt.Errorf("failed to register signature verification check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.HashIntegrityCheck{}); err != nil {
-		return fmt.Errorf("failed to register hash integrity check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.EncryptionStandardCheck{}); err != nil {
-		return fmt.Errorf("failed to register encryption standard check: %w", err)
-	}
-	
-	// Security and metadata checks (checks 9-11)
-	if err := registry.Register(&checks.SecurityFlagValidationCheck{}); err != nil {
-		return fmt.Errorf("failed to register security flag validation check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.VersionInformationCheck{}); err != nil {
-		return fmt.Errorf("failed to register version information check: %w", err)
-	}
-	
-	if err := registry.Register(&checks.LicenseComplianceCheck{}); err != nil {
-		return fmt.Errorf("failed to register license compliance check: %w", err)
-	}
-	
-	return nil
-}
-
-// isValidOutputFormat checks if the output format is supported
-func isValidOutputFormat(format string) bool {
-	switch strings.ToLower(format) {
-	case "json", "text":
-		return true
-	default:
-		return false
-	}
-}
-
-// isValidSBOMFormat checks if the SBOM format is supported
-func isValidSBOMFormat(format string) bool {
-	switch strings.ToLower(format) {
-	case "cyclonedx", "spdx":
-		return true
-	default:
-		return false
-	}
-}
-
-// generateSBOMFile generates an SBOM file for the given binary
-func generateSBOMFile(binaryPath, format, outputPath string, logger *utils.Logger) (string, error) {
 	// Create SBOM generator
 	generator := sbom.NewGenerator()
 	
-	// Parse SBOM format
+	// Determine SBOM format
 	var sbomFormat sbom.SBOMFormat
-	switch strings.ToLower(format) {
+	switch format {
 	case "cyclonedx":
-		sbomFormat = sbom.CycloneDX
+		sbomFormat = sbom.FormatCycloneDX
 	case "spdx":
-		sbomFormat = sbom.SPDX
+		sbomFormat = sbom.FormatSPDX
 	default:
-		return "", fmt.Errorf("unsupported SBOM format: %s", format)
+		return nil, fmt.Errorf("unsupported SBOM format: %s", format)
 	}
-	
-	logger.WithComponent("sbom").Debugf("Generating %s SBOM for binary: %s", format, binaryPath)
 	
 	// Generate SBOM
-	sbomData, err := generator.Generate(binaryPath, sbomFormat)
+	generatedSBOM, err := generator.Generate(binaryPath, sbomFormat)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate SBOM: %w", err)
+		return nil, fmt.Errorf("failed to generate SBOM: %w", err)
 	}
 	
-	logger.WithComponent("sbom").Debugf("Generated SBOM with %d components", sbomData.GetComponentCount())
+	// Create output filename
+	outputPath := fmt.Sprintf("sbom.%s.json", format)
 	
 	// Write SBOM to file
-	err = generator.WriteToFile(sbomData, outputPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to write SBOM file: %w", err)
+	if err := generator.WriteToFile(generatedSBOM, outputPath); err != nil {
+		return nil, fmt.Errorf("failed to write SBOM file: %w", err)
 	}
 	
-	return outputPath, nil
+	// Get file info
+	fileInfo, err := os.Stat(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get SBOM file info: %w", err)
+	}
+	
+	logger.WithComponent("sbom").Infof("SBOM generated successfully: %s", outputPath)
+	
+	return &sbom.SBOMInfo{
+		Format:     format,
+		Version:    "1.0",
+		FilePath:   outputPath,
+		Size:       fileInfo.Size(),
+		Components: len(generatedSBOM.Components),
+		Generated:  time.Now(),
+		Valid:      true,
+	}, nil
 }
 
-// outputReport outputs the compliance report in the specified format
-func outputReport(report *checks.ComplianceReport, format string) error {
-	switch strings.ToLower(format) {
+// outputResults outputs the compliance check results in the specified format
+func outputResults(report *checks.CheckReport, sbomInfo *sbom.SBOMInfo, format string) error {
+	switch format {
 	case "json":
-		return outputJSONReport(report)
+		return outputJSON(report, sbomInfo)
 	case "text":
-		return outputTextReport(report)
+		return outputText(report, sbomInfo)
 	default:
 		return fmt.Errorf("unsupported output format: %s", format)
 	}
 }
 
-// outputJSONReport outputs the report in JSON format
-func outputJSONReport(report *checks.ComplianceReport) error {
+// outputJSON outputs results in JSON format
+func outputJSON(report *checks.CheckReport, sbomInfo *sbom.SBOMInfo) error {
+	output := map[string]interface{}{
+		"summary": map[string]interface{}{
+			"total_checks":  report.TotalChecks,
+			"passed_checks": report.PassedChecks,
+			"failed_checks": report.FailedChecks,
+			"binary_path":   report.BinaryPath,
+			"timestamp":     time.Now().Format(time.RFC3339),
+		},
+		"checks": report.Results,
+	}
+	
+	if sbomInfo != nil {
+		output["sbom"] = sbomInfo
+	}
+	
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(report)
+	return encoder.Encode(output)
 }
 
-// outputTextReport outputs the report in human-readable text format
-func outputTextReport(report *checks.ComplianceReport) error {
-	fmt.Printf("Raven Betanet 1.1 Compliance Report\n")
-	fmt.Printf("===================================\n\n")
-	
+// outputText outputs results in human-readable text format
+func outputText(report *checks.CheckReport, sbomInfo *sbom.SBOMInfo) error {
+	fmt.Printf("Raven Betanet 1.1 Compliance Check Report\n")
+	fmt.Printf("========================================\n\n")
 	fmt.Printf("Binary: %s\n", report.BinaryPath)
-	fmt.Printf("Hash: %s\n", report.BinaryHash)
-	fmt.Printf("Timestamp: %s\n", report.Timestamp.Format("2006-01-02 15:04:05 UTC"))
-	fmt.Printf("Duration: %v\n\n", report.Duration)
+	fmt.Printf("Timestamp: %s\n\n", time.Now().Format(time.RFC3339))
 	
-	fmt.Printf("Summary: %d/%d checks passed\n", report.PassedChecks, report.TotalChecks)
-	if report.SBOMPath != "" {
-		fmt.Printf("SBOM: %s\n", report.SBOMPath)
+	fmt.Printf("Summary:\n")
+	fmt.Printf("  Total checks: %d\n", report.TotalChecks)
+	fmt.Printf("  Passed: %d\n", report.PassedChecks)
+	fmt.Printf("  Failed: %d\n", report.FailedChecks)
+	fmt.Printf("  Overall status: ")
+	
+	if report.FailedChecks == 0 {
+		fmt.Printf("✅ PASS\n\n")
+	} else {
+		fmt.Printf("❌ FAIL\n\n")
 	}
-	fmt.Printf("\n")
 	
-	// Create tabwriter for aligned output
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "CHECK ID\tSTATUS\tDESCRIPTION\tDETAILS\n")
-	fmt.Fprintf(w, "--------\t------\t-----------\t-------\n")
+	fmt.Printf("Check Details:\n")
+	fmt.Printf("--------------\n")
 	
 	for _, result := range report.Results {
-		status := strings.ToUpper(result.Status)
-		if result.Status == "pass" {
-			status = "✓ PASS"
-		} else {
-			status = "✗ FAIL"
+		status := "✅ PASS"
+		if result.Status == "fail" {
+			status = "❌ FAIL"
+		} else if result.Status == "skip" {
+			status = "⏭️  SKIP"
+		} else if result.Status == "error" {
+			status = "⚠️  ERROR"
 		}
 		
-		details := result.Details
-		if len(details) > 50 {
-			details = details[:47] + "..."
+		fmt.Printf("%s %s: %s\n", status, result.ID, result.Description)
+		if result.Details != nil {
+			fmt.Printf("    Details: %v\n", result.Details)
 		}
-		
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", result.ID, status, result.Description, details)
-	}
-	
-	w.Flush()
-	
-	// Show failed checks details if any
-	if report.FailedChecks > 0 {
-		fmt.Printf("\nFailed Checks Details:\n")
-		fmt.Printf("======================\n")
-		for _, result := range report.Results {
-			if result.Status == "fail" {
-				fmt.Printf("\n%s: %s\n", result.ID, result.Description)
-				fmt.Printf("Details: %s\n", result.Details)
-				if len(result.Metadata) > 0 {
-					fmt.Printf("Metadata:\n")
-					for key, value := range result.Metadata {
-						fmt.Printf("  %s: %v\n", key, value)
-					}
-				}
-			}
+		if result.Duration > 0 {
+			fmt.Printf("    Duration: %v\n", result.Duration)
 		}
+		fmt.Printf("\n")
 	}
 	
-	return nil
-}
-
-// newUpdateCommand creates the update subcommand
-func newUpdateCommand() *cobra.Command {
-	var (
-		checkOnly bool
-		force     bool
-	)
-
-	cmd := &cobra.Command{
-		Use:   "update",
-		Short: "Update raven-linter to the latest version",
-		Long: `Check for and install the latest version of raven-linter from GitHub releases.
-
-The update command will:
-1. Check the GitHub releases API for the latest version
-2. Compare with the current version
-3. Download and install the new version if available
-4. Create a backup of the current binary before updating
-
-Examples:
-  raven-linter update                    # Check and update if newer version available
-  raven-linter update --check-only       # Only check for updates, don't install
-  raven-linter update --force            # Force update even if versions are the same`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdateCommand(cmd, checkOnly, force)
-		},
+	if sbomInfo != nil {
+		fmt.Printf("SBOM Information:\n")
+		fmt.Printf("-----------------\n")
+		fmt.Printf("  Format: %s\n", sbomInfo.Format)
+		fmt.Printf("  File: %s\n", sbomInfo.FilePath)
+		fmt.Printf("  Size: %d bytes\n", sbomInfo.Size)
+		fmt.Printf("  Components: %d\n", sbomInfo.Components)
+		fmt.Printf("  Generated: %s\n", sbomInfo.Generated.Format(time.RFC3339))
+		fmt.Printf("\n")
 	}
-
-	cmd.Flags().BoolVar(&checkOnly, "check-only", false, "Only check for updates without installing")
-	cmd.Flags().BoolVar(&force, "force", false, "Force update even if current version is up to date")
-
-	return cmd
-}
-
-// runUpdateCommand executes the update command
-func runUpdateCommand(cmd *cobra.Command, checkOnly, force bool) error {
-	// Get logger from context
-	logger := utils.LoggerFromContext(cmd.Context())
-	if logger == nil {
-		logger = utils.NewDefaultLogger()
-	}
-
-	// Create updater
-	updaterConfig := utils.UpdaterConfig{
-		Repository:     "raven-betanet/dual-cli", // Replace with actual repository
-		BinaryName:     "raven-linter",
-		CurrentVersion: version,
-		Logger:         logger,
-	}
-
-	updater := utils.NewUpdater(updaterConfig)
-
-	// Check for updates
-	fmt.Printf("Checking for updates...\n")
-	release, hasUpdate, err := updater.CheckForUpdate()
-	if err != nil {
-		return fmt.Errorf("failed to check for updates: %w", err)
-	}
-
-	// Display current version info
-	fmt.Printf("Current version: %s\n", version)
-	
-	if release != nil {
-		fmt.Printf("Latest version:  %s\n", release.TagName)
-	}
-
-	if !hasUpdate && !force {
-		fmt.Printf("✅ You are already running the latest version!\n")
-		return nil
-	}
-
-	if force && !hasUpdate {
-		fmt.Printf("⚠️  Forcing update to same version: %s\n", release.TagName)
-	} else if hasUpdate {
-		fmt.Printf("🔄 New version available: %s\n", release.TagName)
-	}
-
-	// If check-only mode, stop here
-	if checkOnly {
-		if hasUpdate {
-			fmt.Printf("\nTo update, run: raven-linter update\n")
-		}
-		return nil
-	}
-
-	// Confirm update
-	if !force {
-		fmt.Printf("\nDo you want to update to %s? [y/N]: ", release.TagName)
-		var response string
-		fmt.Scanln(&response)
-		
-		if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
-			fmt.Printf("Update cancelled.\n")
-			return nil
-		}
-	}
-
-	// Perform update
-	fmt.Printf("Updating to %s...\n", release.TagName)
-	
-	if err := updater.Update(release, force); err != nil {
-		return fmt.Errorf("update failed: %w", err)
-	}
-
-	fmt.Printf("✅ Successfully updated to %s!\n", release.TagName)
-	fmt.Printf("Please restart the application to use the new version.\n")
 	
 	return nil
 }

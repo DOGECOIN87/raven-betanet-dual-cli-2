@@ -381,3 +381,7 @@ func (h *HTTPClient) SetUserAgent(userAgent string) {
 	h.config.UserAgent = userAgent
 }
 
+// SetClient sets the underlying HTTP client (for compatibility with tests)
+func (c *HTTPClient) SetClient(client *http.Client) {
+	c.client = client
+}

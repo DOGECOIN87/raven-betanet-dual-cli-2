@@ -1,0 +1,253 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "created": "0001-01-01T00:00:00Z",
+    "creators": [
+      "Tool: -"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "urn:uuid:43a51e9e-d8cd-df8b-e129-a41807e6f0b2",
+  "name": "SBOM for raven-linter",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-raven-linter",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "name": "raven-linter"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "ELF binary (EM_X86_64)",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "raven-linter",
+      "versionInfo": "1.0.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Inferred from symbols (prefix: pthread_)",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pthread"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "toolchain",
+      "versionInfo": "0.0.1-go1.24.6.linux-amd64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pflag",
+      "versionInfo": "1.0.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cobra",
+      "versionInfo": "1.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "text",
+      "versionInfo": "0.23.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "gotenv",
+      "versionInfo": "1.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cast",
+      "versionInfo": "1.7.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "viper",
+      "versionInfo": "1.20.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "v2",
+      "versionInfo": "2.2.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "yaml.v3",
+      "versionInfo": "3.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "conc",
+      "versionInfo": "0.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "afero",
+      "versionInfo": "1.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "locafero",
+      "versionInfo": "0.7.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "sys",
+      "versionInfo": "0.31.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fsnotify",
+      "versionInfo": "1.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "v2",
+      "versionInfo": "2.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Go module",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "logrus",
+      "versionInfo": "1.9.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Rust crate",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "actioncommandoperandSHA-224SHA-256SHA-384SHA",
+      "versionInfo": "5122.5.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Python package",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "actioncommandoperandSHA-224SHA-256SHA-384SHA",
+      "versionInfo": "5122.5.4.62.5.4.32.5.4.52.5.4.72.5.4.82.5.4.9no"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-",
+      "copyrightText": "NOASSERTION",
+      "description": "Python package",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pre",
+      "versionInfo": "7.2"
+    }
+  ],
+  "relationships": null,
+  "spdxVersion": "SPDX-1.0"
+}

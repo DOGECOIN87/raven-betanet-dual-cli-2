@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,7 +50,7 @@ type GitHubAsset struct {
 // Updater handles binary updates from GitHub releases
 type Updater struct {
 	config     UpdaterConfig
-	httpClient *HTTPClient
+	httpClient *http.Client
 	logger     *Logger
 }
 
@@ -61,7 +63,7 @@ func NewUpdater(config UpdaterConfig) *Updater {
 
 	return &Updater{
 		config:     config,
-		httpClient: NewDefaultHTTPClient(),
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 		logger:     logger,
 	}
 }
@@ -74,7 +76,7 @@ func (u *Updater) CheckForUpdate() (*GitHubRelease, bool, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", u.config.Repository)
 	
 	var release GitHubRelease
-	err := u.httpClient.GetJSON(apiURL, &release)
+	err := u.getJSON(apiURL, &release)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to fetch latest release: %w", err)
 	}
@@ -86,7 +88,10 @@ func (u *Updater) CheckForUpdate() (*GitHubRelease, bool, error) {
 	}
 
 	// Compare versions
-	hasUpdate := u.isNewerVersion(release.TagName, u.config.CurrentVersion)
+	hasUpdate, err := u.isNewerVersion(release.TagName, u.config.CurrentVersion)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to compare versions: %w", err)
+	}
 	
 	u.logger.WithComponent("updater").Debugf("Version comparison: current=%s, latest=%s, hasUpdate=%t", 
 		u.config.CurrentVersion, release.TagName, hasUpdate)
@@ -115,7 +120,7 @@ func (u *Updater) Update(release *GitHubRelease, force bool) error {
 
 	// Download the asset
 	downloadPath := filepath.Join(tempDir, asset.Name)
-	err = u.httpClient.DownloadFile(asset.BrowserDownloadURL, downloadPath)
+	err = u.downloadFile(asset.BrowserDownloadURL, downloadPath)
 	if err != nil {
 		return fmt.Errorf("failed to download asset: %w", err)
 	}
@@ -162,23 +167,23 @@ func (u *Updater) Update(release *GitHubRelease, force bool) error {
 }
 
 // isNewerVersion compares two version strings
-func (u *Updater) isNewerVersion(latest, current string) bool {
+func (u *Updater) isNewerVersion(latest, current string) (bool, error) {
 	// Remove 'v' prefix if present
 	latest = strings.TrimPrefix(latest, "v")
 	current = strings.TrimPrefix(current, "v")
 
 	// Handle special cases
 	if current == "dev" || current == "unknown" {
-		return true // Always update from dev/unknown versions
+		return true, nil // Always update from dev/unknown versions
 	}
 
 	if latest == current {
-		return false
+		return false, nil
 	}
 
 	// Simple lexicographic comparison for now
 	// Real implementation would use semantic versioning
-	return latest > current
+	return latest > current, nil
 }
 
 // findAssetForPlatform finds the appropriate asset for the current platform
@@ -500,4 +505,64 @@ func (u *Updater) GetCurrentVersion() string {
 // SetCurrentVersion updates the current version
 func (u *Updater) SetCurrentVersion(version string) {
 	u.config.CurrentVersion = version
+}
+
+// createBackup creates a backup of the current binary (for compatibility with tests)
+func (u *Updater) createBackup(sourcePath, backupPath string) error {
+	err := u.copyFile(sourcePath, backupPath)
+	if err != nil {
+		return fmt.Errorf("failed to create backup: %w", err)
+	}
+	return nil
+}
+
+// replaceBinary replaces the current binary with a new one (for compatibility with tests)
+func (u *Updater) replaceBinary(currentPath, newPath string) error {
+	return u.replaceExecutable(currentPath, newPath)
+}
+
+// getJSON performs a GET request and unmarshals the response into the provided interface
+func (u *Updater) getJSON(url string, v interface{}) error {
+	resp, err := u.httpClient.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to make GET request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
+	}
+
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(v); err != nil {
+		return fmt.Errorf("failed to decode JSON response: %w", err)
+	}
+
+	return nil
+}
+
+// downloadFile downloads a file from the given URL to the specified path
+func (u *Updater) downloadFile(url, filepath string) error {
+	resp, err := u.httpClient.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to download file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
+	}
+
+	outFile, err := os.Create(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
 }

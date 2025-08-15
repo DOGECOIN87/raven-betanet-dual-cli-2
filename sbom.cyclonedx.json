@@ -1,0 +1,401 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "",
+      "description": "ELF binary (EM_X86_64)",
+      "name": "raven-linter",
+      "properties": [
+        {
+          "name": "binary.format",
+          "value": "ELF"
+        },
+        {
+          "name": "binary.architecture",
+          "value": "EM_X86_64"
+        },
+        {
+          "name": "binary.class",
+          "value": "64-bit"
+        },
+        {
+          "name": "binary.data",
+          "value": "little-endian"
+        },
+        {
+          "name": "binary.type",
+          "value": "executable"
+        }
+      ],
+      "type": "application",
+      "version": "1.0.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Inferred from symbols (prefix: pthread_)",
+      "name": "pthread",
+      "properties": [
+        {
+          "name": "inference.method",
+          "value": "symbol-prefix"
+        },
+        {
+          "name": "inference.symbol",
+          "value": "pthread_key_destructor"
+        },
+        {
+          "name": "source.binary",
+          "value": "ELF"
+        }
+      ],
+      "scope": "required",
+      "type": "library"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "toolchain",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/golang.org/toolchain"
+        }
+      ],
+      "type": "library",
+      "version": "0.0.1-go1.24.6.linux-amd64"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "pflag",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/spf13/pflag"
+        }
+      ],
+      "type": "library",
+      "version": "1.0.6"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "cobra",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/spf13/cobra"
+        }
+      ],
+      "type": "library",
+      "version": "1.8.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "text",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/golang.org/x/text"
+        }
+      ],
+      "type": "library",
+      "version": "0.23.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "gotenv",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/subosito/gotenv"
+        }
+      ],
+      "type": "library",
+      "version": "1.6.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "cast",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/spf13/cast"
+        }
+      ],
+      "type": "library",
+      "version": "1.7.1"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "viper",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/spf13/viper"
+        }
+      ],
+      "type": "library",
+      "version": "1.20.1"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "v2",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/pelletier/go-toml/v2"
+        }
+      ],
+      "type": "library",
+      "version": "2.2.3"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "yaml.v3",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/gopkg.in/yaml.v3"
+        }
+      ],
+      "type": "library",
+      "version": "3.0.1"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "conc",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/sourcegraph/conc"
+        }
+      ],
+      "type": "library",
+      "version": "0.3.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "afero",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/spf13/afero"
+        }
+      ],
+      "type": "library",
+      "version": "1.12.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "locafero",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/sagikazarmark/locafero"
+        }
+      ],
+      "type": "library",
+      "version": "0.7.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "sys",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/golang.org/x/sys"
+        }
+      ],
+      "type": "library",
+      "version": "0.31.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "fsnotify",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/fsnotify/fsnotify"
+        }
+      ],
+      "type": "library",
+      "version": "1.8.0"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "v2",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/go-viper/mapstructure/v2"
+        }
+      ],
+      "type": "library",
+      "version": "2.2.1"
+    },
+    {
+      "bom-ref": "",
+      "description": "Go module",
+      "name": "logrus",
+      "properties": [
+        {
+          "name": "language",
+          "value": "go"
+        },
+        {
+          "name": "module.path",
+          "value": "home/mattrick/go/pkg/mod/github.com/sirupsen/logrus"
+        }
+      ],
+      "type": "library",
+      "version": "1.9.3"
+    },
+    {
+      "bom-ref": "",
+      "description": "Rust crate",
+      "name": "actioncommandoperandSHA-224SHA-256SHA-384SHA",
+      "properties": [
+        {
+          "name": "language",
+          "value": "rust"
+        }
+      ],
+      "type": "library",
+      "version": "5122.5.4"
+    },
+    {
+      "bom-ref": "",
+      "description": "Python package",
+      "name": "actioncommandoperandSHA-224SHA-256SHA-384SHA",
+      "properties": [
+        {
+          "name": "language",
+          "value": "python"
+        }
+      ],
+      "type": "library",
+      "version": "5122.5.4.62.5.4.32.5.4.52.5.4.72.5.4.82.5.4.9no"
+    },
+    {
+      "bom-ref": "",
+      "description": "Python package",
+      "name": "pre",
+      "properties": [
+        {
+          "name": "language",
+          "value": "python"
+        }
+      ],
+      "type": "library",
+      "version": "7.2"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "main-component",
+      "description": "Binary application (ELF)",
+      "hashes": null,
+      "name": "raven-linter",
+      "properties": [
+        {
+          "name": "binary:architecture",
+          "value": ""
+        },
+        {
+          "name": "binary:format",
+          "value": "ELF"
+        },
+        {
+          "name": "binary:size",
+          "value": "12469936"
+        }
+      ],
+      "type": "application",
+      "version": "1.0.0"
+    },
+    "timestamp": "0001-01-01T00:00:00Z",
+    "tools": [
+      {
+        "name": "",
+        "vendor": "",
+        "version": ""
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:43a51e9e-d8cd-df8b-e129-a41807e6f0b2",
+  "specVersion": "1.0",
+  "version": 1
+}

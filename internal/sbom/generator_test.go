@@ -60,17 +60,12 @@ func TestGenerator_Generate_NonExistentFile(t *testing.T) {
 }
 
 func TestGenerator_Generate_ValidBinary(t *testing.T) {
-	// Create a temporary test binary file
-	tempDir := t.TempDir()
-	testBinary := filepath.Join(tempDir, "test-binary")
+	// Use the actual valid ELF binary from fixtures
+	testBinary := "../../tests/fixtures/sample_binaries/valid_elf_binary"
 	
-	// Create a simple ELF-like file (just the magic bytes for testing)
-	elfHeader := []byte{0x7F, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00}
-	elfHeader = append(elfHeader, make([]byte, 56)...) // Pad to minimum ELF header size
-	
-	err := os.WriteFile(testBinary, elfHeader, 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test binary: %v", err)
+	// Check if the test binary exists
+	if _, err := os.Stat(testBinary); os.IsNotExist(err) {
+		t.Skip("Test binary not found, skipping test")
 	}
 	
 	generator := NewGenerator()

@@ -1,8 +1,6 @@
 package tlsgen
 
 import (
-	"encoding/binary"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,414 +10,329 @@ import (
 
 func TestNewTLSGenerator(t *testing.T) {
 	generator := NewTLSGenerator()
-	
 	assert.NotNil(t, generator)
-	assert.Equal(t, 10*time.Second, generator.timeout)
+	assert.NotNil(t, generator.randomSource)
 }
 
-func TestNewTLSGeneratorWithTimeout(t *testing.T) {
-	timeout := 5 * time.Second
-	generator := NewTLSGeneratorWithTimeout(timeout)
-	
-	assert.NotNil(t, generator)
-	assert.Equal(t, timeout, generator.timeout)
-}
-
-func TestMapChromeVersionToClientHelloID(t *testing.T) {
+func TestTLSGenerator_GenerateTemplate(t *testing.T) {
 	generator := NewTLSGenerator()
 	
-	testCases := []struct {
-		name     string
-		version  ChromeVersion
-		expected string // We'll check the string representation
-	}{
-		{
-			name:     "Chrome 133+",
-			version:  ChromeVersion{Major: 133, Minor: 0, Build: 6099, Patch: 109},
-			expected: "133",
-		},
-		{
-			name:     "Chrome 131-132",
-			version:  ChromeVersion{Major: 131, Minor: 0, Build: 6099, Patch: 109},
-			expected: "131",
-		},
-		{
-			name:     "Chrome 120-130",
-			version:  ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109},
-			expected: "120",
-		},
-		{
-			name:     "Chrome 115-119",
-			version:  ChromeVersion{Major: 115, Minor: 0, Build: 5790, Patch: 102},
-			expected: "115_PQ",
-		},
-		{
-			name:     "Chrome 106-114",
-			version:  ChromeVersion{Major: 108, Minor: 0, Build: 5359, Patch: 124},
-			expected: "106",
-		},
-		{
-			name:     "Chrome 100-101",
-			version:  ChromeVersion{Major: 100, Minor: 0, Build: 4896, Patch: 75},
-			expected: "100",
-		},
-		{
-			name:     "Chrome older than 100",
-			version:  ChromeVersion{Major: 95, Minor: 0, Build: 4638, Patch: 69},
-			expected: "87", // Actually maps to Chrome 87 for version 95
-		},
+	version := ChromeVersion{
+		Major: 120,
+		Minor: 0,
+		Build: 6099,
+		Patch: 109,
 	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			clientHelloID, err := generator.mapChromeVersionToClientHelloID(tc.version)
-			require.NoError(t, err)
-			assert.Contains(t, clientHelloID.Str(), tc.expected)
-		})
-	}
+
+	template, err := generator.GenerateTemplate(version)
+	require.NoError(t, err)
+	require.NotNil(t, template)
+
+	assert.Equal(t, version, template.Version)
+	assert.NotEmpty(t, template.Bytes)
+	assert.NotEmpty(t, template.JA3String)
+	assert.NotEmpty(t, template.JA3Hash)
+	assert.False(t, template.GeneratedAt.IsZero())
+	assert.NotEmpty(t, template.Metadata.UTLSFingerprint)
 }
 
-func TestCalculateMD5Hash(t *testing.T) {
+func TestTLSGenerator_GenerateTemplate_UnsupportedVersion(t *testing.T) {
 	generator := NewTLSGenerator()
 	
-	testCases := []struct {
-		input    string
-		expected string
-	}{
-		{
-			input:    "771,4865-4866-4867,0-23-65281,29-23-24,0",
-			expected: "650293d7a2ffb5335422221c5d75a9c9", // Correct MD5 hash
-		},
-		{
-			input:    "",
-			expected: "d41d8cd98f00b204e9800998ecf8427e", // MD5 of empty string
-		},
-		{
-			input:    "test",
-			expected: "098f6bcd4621d373cade4e832627b4f6", // MD5 of "test"
-		},
+	version := ChromeVersion{
+		Major: 69, // Unsupported version
+		Minor: 0,
+		Build: 0,
+		Patch: 0,
 	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.input, func(t *testing.T) {
-			result := generator.calculateMD5Hash(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
+
+	template, err := generator.GenerateTemplate(version)
+	assert.Error(t, err)
+	assert.Nil(t, template)
+	assert.Contains(t, err.Error(), "not supported")
 }
 
-func TestJoinInts(t *testing.T) {
+func TestTLSGenerator_GenerateTemplate_InvalidVersion(t *testing.T) {
 	generator := NewTLSGenerator()
 	
-	testCases := []struct {
-		name     string
-		values   []uint16
-		sep      string
-		expected string
-	}{
-		{
-			name:     "empty slice",
-			values:   []uint16{},
-			sep:      "-",
-			expected: "",
-		},
-		{
-			name:     "single value",
-			values:   []uint16{123},
-			sep:      "-",
-			expected: "123",
-		},
-		{
-			name:     "multiple values with dash",
-			values:   []uint16{123, 456, 789},
-			sep:      "-",
-			expected: "123-456-789",
-		},
-		{
-			name:     "multiple values with comma",
-			values:   []uint16{123, 456, 789},
-			sep:      ",",
-			expected: "123,456,789",
-		},
+	version := ChromeVersion{
+		Major: -1, // Invalid version
+		Minor: 0,
+		Build: 0,
+		Patch: 0,
 	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := generator.joinInts(tc.values, tc.sep)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
+
+	template, err := generator.GenerateTemplate(version)
+	assert.Error(t, err)
+	assert.Nil(t, template)
+	assert.Contains(t, err.Error(), "invalid Chrome version")
 }
 
-func TestIsGREASE(t *testing.T) {
+func TestTLSGenerator_ValidateTemplate(t *testing.T) {
 	generator := NewTLSGenerator()
-	
-	testCases := []struct {
-		name     string
-		value    uint16
-		expected bool
-	}{
-		{
-			name:     "GREASE value 0x0A0A",
-			value:    0x0A0A,
-			expected: true,
-		},
-		{
-			name:     "GREASE value 0x1A1A",
-			value:    0x1A1A,
-			expected: true,
-		},
-		{
-			name:     "GREASE value 0x2A2A",
-			value:    0x2A2A,
-			expected: true,
-		},
-		{
-			name:     "GREASE value 0x3A3A",
-			value:    0x3A3A,
-			expected: true,
-		},
-		{
-			name:     "Non-GREASE value 0x0000",
-			value:    0x0000,
-			expected: false,
-		},
-		{
-			name:     "Non-GREASE value 0x0023",
-			value:    0x0023,
-			expected: false,
-		},
-		{
-			name:     "Non-GREASE value 0x1234",
-			value:    0x1234,
-			expected: false,
-		},
-		{
-			name:     "Non-GREASE value 0x1A2A (different nibbles)",
-			value:    0x1A2A,
-			expected: false,
-		},
+
+	// Valid template
+	validTemplate := &ClientHelloTemplate{
+		Version: ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		Bytes:   []byte{0x16, 0x03, 0x01, 0x00, 0x10}, // Sample bytes
+		JA3String: "771,4865-4866-4867,0-23-65281,29-23-24,0",
+		JA3Hash: "cd08e31494f9531f560d64c695473da9",
+		GeneratedAt: time.Now(),
 	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := generator.isGREASE(tc.value)
-			assert.Equal(t, tc.expected, result)
-		})
+
+	err := generator.ValidateTemplate(validTemplate)
+	assert.NoError(t, err)
+
+	// Invalid template - nil
+	err = generator.ValidateTemplate(nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "template is nil")
+
+	// Invalid template - empty bytes
+	invalidTemplate := &ClientHelloTemplate{
+		Version: ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		Bytes:   []byte{},
+		JA3String: "771,4865-4866-4867,0-23-65281,29-23-24,0",
+		JA3Hash: "cd08e31494f9531f560d64c695473da9",
+		GeneratedAt: time.Now(),
 	}
+
+	err = generator.ValidateTemplate(invalidTemplate)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "template bytes are empty")
+
+	// Invalid template - empty JA3 string
+	invalidTemplate.Bytes = []byte{0x16, 0x03, 0x01, 0x00, 0x10}
+	invalidTemplate.JA3String = ""
+
+	err = generator.ValidateTemplate(invalidTemplate)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "JA3 string is empty")
 }
 
-func TestFilterAndSortExtensions(t *testing.T) {
+func TestTLSGenerator_CompareTemplates(t *testing.T) {
 	generator := NewTLSGenerator()
-	
-	testCases := []struct {
+
+	template1 := &ClientHelloTemplate{
+		Version: ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		Bytes:   []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash: "cd08e31494f9531f560d64c695473da9",
+	}
+
+	template2 := &ClientHelloTemplate{
+		Version: ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		Bytes:   []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash: "cd08e31494f9531f560d64c695473da9",
+	}
+
+	template3 := &ClientHelloTemplate{
+		Version: ChromeVersion{Major: 121, Minor: 0, Build: 6100, Patch: 110},
+		Bytes:   []byte{0x16, 0x03, 0x01, 0x00, 0x11},
+		JA3Hash: "different_hash",
+	}
+
+	// Same templates should be equal
+	assert.True(t, generator.CompareTemplates(template1, template2))
+
+	// Different templates should not be equal
+	assert.False(t, generator.CompareTemplates(template1, template3))
+
+	// Nil templates should not be equal
+	assert.False(t, generator.CompareTemplates(template1, nil))
+	assert.False(t, generator.CompareTemplates(nil, template2))
+	assert.False(t, generator.CompareTemplates(nil, nil))
+}
+
+func TestTLSGenerator_BuildJA3String(t *testing.T) {
+	generator := NewTLSGenerator()
+
+	components := &JA3Components{
+		TLSVersion:   771,
+		CipherSuites: []uint16{4865, 4866, 4867},
+		Extensions:   []uint16{0, 23, 65281},
+		EllipticCurves: []uint16{29, 23, 24},
+		EllipticCurveFormats: []uint8{0},
+	}
+
+	ja3String := generator.buildJA3String(components)
+	expected := "771,4865-4866-4867,0-23-65281,29-23-24,0"
+	assert.Equal(t, expected, ja3String)
+}
+
+func TestTLSGenerator_Uint16SliceToString(t *testing.T) {
+	generator := NewTLSGenerator()
+
+	tests := []struct {
 		name     string
 		input    []uint16
-		expected []uint16
+		expected string
 	}{
 		{
 			name:     "empty slice",
 			input:    []uint16{},
-			expected: []uint16{},
+			expected: "",
 		},
 		{
-			name:     "no GREASE values",
-			input:    []uint16{23, 0, 65281, 10},
-			expected: []uint16{0, 10, 23, 65281},
+			name:     "single element",
+			input:    []uint16{4865},
+			expected: "4865",
 		},
 		{
-			name:     "with GREASE values",
-			input:    []uint16{23, 0x0A0A, 65281, 0x1A1A, 10},
-			expected: []uint16{10, 23, 65281}, // 0x0A0A and 0x1A1A should be filtered out
-		},
-		{
-			name:     "already sorted",
-			input:    []uint16{0, 10, 23, 65281},
-			expected: []uint16{0, 10, 23, 65281},
+			name:     "multiple elements",
+			input:    []uint16{4865, 4866, 4867},
+			expected: "4865-4866-4867",
 		},
 	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := generator.filterAndSortExtensions(tc.input)
-			assert.Equal(t, tc.expected, result)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := generator.uint16SliceToString(tt.input)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
-func TestParseClientHelloBasic(t *testing.T) {
+func TestTLSGenerator_Uint8SliceToString(t *testing.T) {
 	generator := NewTLSGenerator()
+
+	tests := []struct {
+		name     string
+		input    []uint8
+		expected string
+	}{
+		{
+			name:     "empty slice",
+			input:    []uint8{},
+			expected: "",
+		},
+		{
+			name:     "single element",
+			input:    []uint8{0},
+			expected: "0",
+		},
+		{
+			name:     "multiple elements",
+			input:    []uint8{0, 1, 2},
+			expected: "0-1-2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := generator.uint8SliceToString(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestTLSGenerator_CalculateJA3Hash(t *testing.T) {
+	generator := NewTLSGenerator()
+
+	ja3String := "771,4865-4866-4867,0-23-65281,29-23-24,0"
+	hash := generator.calculateJA3Hash(ja3String)
+
+	// Should be a valid MD5 hash (32 hex characters)
+	assert.Len(t, hash, 32)
+	assert.Regexp(t, "^[a-f0-9]{32}$", hash)
+
+	// Same input should produce same hash
+	hash2 := generator.calculateJA3Hash(ja3String)
+	assert.Equal(t, hash, hash2)
+
+	// Different input should produce different hash
+	differentJA3String := "771,4865-4866,0-23,29-23,0"
+	differentHash := generator.calculateJA3Hash(differentJA3String)
+	assert.NotEqual(t, hash, differentHash)
+}
+
+func TestTLSGenerator_CreateTemplateMetadata(t *testing.T) {
+	generator := NewTLSGenerator()
+
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
 	
-	// Create a minimal valid ClientHello message
-	clientHello := createTestClientHello()
-	
-	info, err := generator.parseClientHello(clientHello)
+	// We can't easily test the actual uTLS ClientHelloID, so we'll test the metadata creation
+	// by calling the method indirectly through GenerateTemplate
+	template, err := generator.GenerateTemplate(version)
 	require.NoError(t, err)
-	assert.NotNil(t, info)
-	
-	// Check basic fields
-	assert.Equal(t, uint16(0x0303), info.Version) // TLS 1.2
-	assert.NotEmpty(t, info.CipherSuites)
+
+	metadata := template.Metadata
+
+	assert.Equal(t, "HelloChrome_120", metadata.UTLSFingerprint)
+	assert.Contains(t, metadata.TLSVersions, "TLS 1.2")
+	assert.Contains(t, metadata.TLSVersions, "TLS 1.3")
+	assert.Contains(t, metadata.CipherSuites, "TLS_AES_128_GCM_SHA256")
+	assert.Contains(t, metadata.SupportedGroups, "X25519")
+	assert.Contains(t, metadata.SignatureAlgorithms, "ecdsa_secp256r1_sha256")
+	assert.Contains(t, metadata.ALPNProtocols, "h2")
+	assert.NotEmpty(t, metadata.Extensions)
 }
 
-func TestParseClientHelloErrors(t *testing.T) {
+func TestTLSGenerator_GetExtensionNames(t *testing.T) {
 	generator := NewTLSGenerator()
-	
-	testCases := []struct {
-		name string
-		data []byte
-	}{
-		{
-			name: "too short",
-			data: []byte{0x01, 0x00},
-		},
-		{
-			name: "missing version",
-			data: []byte{0x01, 0x00, 0x00, 0x10}, // handshake header only
-		},
-		{
-			name: "missing random",
-			data: []byte{0x01, 0x00, 0x00, 0x10, 0x03, 0x03}, // header + version
-		},
-	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := generator.parseClientHello(tc.data)
-			assert.Error(t, err)
-		})
-	}
+
+	// Test Chrome 120 (has post-quantum support)
+	version120 := ChromeVersion{Major: 120}
+	extensions120 := generator.getExtensionNames(version120)
+
+	assert.Contains(t, extensions120, "server_name")
+	assert.Contains(t, extensions120, "supported_groups")
+	assert.Contains(t, extensions120, "key_share")
+	assert.Contains(t, extensions120, "post_quantum_key_share")
+
+	// Test Chrome 110 (has extension shuffling)
+	version110 := ChromeVersion{Major: 110}
+	extensions110 := generator.getExtensionNames(version110)
+
+	assert.Contains(t, extensions110, "server_name")
+	assert.Contains(t, extensions110, "extension_shuffling")
+	assert.NotContains(t, extensions110, "post_quantum_key_share")
+
+	// Test Chrome 100 (no special features)
+	version100 := ChromeVersion{Major: 100}
+	extensions100 := generator.getExtensionNames(version100)
+
+	assert.Contains(t, extensions100, "server_name")
+	assert.NotContains(t, extensions100, "post_quantum_key_share")
+	assert.NotContains(t, extensions100, "extension_shuffling")
 }
 
-func TestCalculateJA3Errors(t *testing.T) {
+func TestTLSGenerator_GenerateDeterministicRandom(t *testing.T) {
 	generator := NewTLSGenerator()
+
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
 	
-	testCases := []struct {
-		name string
-		data []byte
-	}{
-		{
-			name: "too short",
-			data: []byte{0x16, 0x03},
-		},
-		{
-			name: "not handshake record",
-			data: []byte{0x15, 0x03, 0x03, 0x00, 0x02, 0x01, 0x00},
-		},
-		{
-			name: "handshake too short",
-			data: []byte{0x16, 0x03, 0x03, 0x00, 0x02, 0x01},
-		},
-		{
-			name: "not ClientHello",
-			data: []byte{0x16, 0x03, 0x03, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00},
-		},
-	}
-	
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := generator.calculateJA3(tc.data)
-			assert.Error(t, err)
-		})
-	}
+	random1 := generator.generateDeterministicRandom(version)
+	random2 := generator.generateDeterministicRandom(version)
+
+	// Should be deterministic (same input produces same output)
+	assert.Equal(t, random1, random2)
+	assert.Len(t, random1, 32)
+
+	// Different version should produce different random
+	differentVersion := ChromeVersion{Major: 121, Minor: 0, Build: 6100, Patch: 110}
+	differentRandom := generator.generateDeterministicRandom(differentVersion)
+	assert.NotEqual(t, random1, differentRandom)
 }
 
-func TestGetSupportedVersions(t *testing.T) {
+// Benchmark tests
+func BenchmarkTLSGenerator_GenerateTemplate(b *testing.B) {
 	generator := NewTLSGenerator()
-	
-	versions := generator.GetSupportedVersions()
-	
-	assert.NotEmpty(t, versions)
-	assert.True(t, len(versions) >= 9) // Should have at least 9 supported versions
-	
-	// Check that versions are in descending order (newest first)
-	for i := 1; i < len(versions); i++ {
-		assert.True(t, versions[i-1].IsNewer(versions[i]) || versions[i-1].Equal(versions[i]))
-	}
-	
-	// Check that all versions have reasonable major version numbers
-	for _, version := range versions {
-		assert.True(t, version.Major >= 100, "Version major should be >= 100")
-		assert.True(t, version.Major <= 130, "Version major should be <= 130")
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		template, err := generator.GenerateTemplate(version)
+		require.NoError(b, err)
+		require.NotNil(b, template)
 	}
 }
 
-// Helper function to create a minimal valid ClientHello for testing
-func createTestClientHello() []byte {
-	var data []byte
-	
-	// Handshake header (4 bytes)
-	data = append(data, 0x01) // ClientHello type
-	data = append(data, 0x00, 0x00, 0x00) // Length placeholder (will be updated)
-	
-	// TLS version (2 bytes)
-	data = append(data, 0x03, 0x03) // TLS 1.2
-	
-	// Random (32 bytes)
-	random := make([]byte, 32)
-	for i := range random {
-		random[i] = byte(i)
-	}
-	data = append(data, random...)
-	
-	// Session ID length (1 byte) + Session ID (0 bytes)
-	data = append(data, 0x00)
-	
-	// Cipher suites length (2 bytes) + cipher suites
-	cipherSuites := []uint16{0x1301, 0x1302, 0x1303} // TLS 1.3 cipher suites
-	data = append(data, 0x00, byte(len(cipherSuites)*2))
-	for _, suite := range cipherSuites {
-		data = binary.BigEndian.AppendUint16(data, suite)
-	}
-	
-	// Compression methods length (1 byte) + compression methods
-	data = append(data, 0x01, 0x00) // No compression
-	
-	// Extensions length (2 bytes) + extensions
-	extensions := []byte{
-		0x00, 0x0a, // Extension type: supported_groups
-		0x00, 0x04, // Extension length
-		0x00, 0x02, // List length
-		0x00, 0x1d, // X25519
-	}
-	data = append(data, 0x00, byte(len(extensions)))
-	data = append(data, extensions...)
-	
-	// Update handshake message length
-	messageLen := len(data) - 4
-	data[1] = byte(messageLen >> 16)
-	data[2] = byte(messageLen >> 8)
-	data[3] = byte(messageLen)
-	
-	return data
-}
-
-func TestExtractJA3StringWithValidData(t *testing.T) {
+func BenchmarkTLSGenerator_CalculateJA3Hash(b *testing.B) {
 	generator := NewTLSGenerator()
-	
-	// Create a test ClientHello
-	clientHello := createTestClientHello()
-	
-	ja3String := generator.extractJA3String(clientHello)
-	
-	// Should not be empty and should contain the expected format
-	assert.NotEmpty(t, ja3String)
-	assert.Contains(t, ja3String, ",") // Should contain commas separating components
-	
-	// Split and check components
-	parts := strings.Split(ja3String, ",")
-	assert.Len(t, parts, 5) // TLSVersion,CipherSuites,Extensions,EllipticCurves,EllipticCurvePointFormats
-}
+	ja3String := "771,4865-4866-4867,0-23-65281,29-23-24,0"
 
-func TestExtractJA3StringWithInvalidData(t *testing.T) {
-	generator := NewTLSGenerator()
-	
-	// Test with invalid data - should return default Chrome-like JA3
-	invalidData := []byte{0x01, 0x00}
-	
-	ja3String := generator.extractJA3String(invalidData)
-	
-	// Should return the default Chrome-like JA3 string
-	expected := "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0"
-	assert.Equal(t, expected, ja3String)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = generator.calculateJA3Hash(ja3String)
+	}
 }

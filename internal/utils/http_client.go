@@ -2,52 +2,73 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
-	"math"
-	"math/rand"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
-// HTTPClient wraps http.Client with retry logic and exponential backoff
-type HTTPClient struct {
-	client      *http.Client
-	retryCount  int
-	backoffFunc func(int) time.Duration
-	logger      *Logger
-}
-
 // HTTPClientConfig holds configuration for the HTTP client
 type HTTPClientConfig struct {
-	Timeout     time.Duration
-	RetryCount  int
-	BackoffFunc func(int) time.Duration
-	Logger      *Logger
+	Timeout         time.Duration `yaml:"timeout" env:"HTTP_TIMEOUT"`
+	MaxRetries      int           `yaml:"max_retries" env:"HTTP_MAX_RETRIES"`
+	RetryDelay      time.Duration `yaml:"retry_delay" env:"HTTP_RETRY_DELAY"`
+	UserAgent       string        `yaml:"user_agent" env:"HTTP_USER_AGENT"`
+	FollowRedirects bool          `yaml:"follow_redirects" env:"HTTP_FOLLOW_REDIRECTS"`
 }
 
-// NewHTTPClient creates a new HTTP client with retry logic
+// HTTPClient wraps http.Client with additional functionality
+type HTTPClient struct {
+	client *http.Client
+	config HTTPClientConfig
+	logger *Logger
+}
+
+// HTTPResponse represents an HTTP response with additional metadata
+type HTTPResponse struct {
+	*http.Response
+	Duration time.Duration
+	Attempt  int
+}
+
+// NewHTTPClient creates a new HTTP client with the given configuration
 func NewHTTPClient(config HTTPClientConfig) *HTTPClient {
+	// Set defaults
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
 	}
-	if config.RetryCount == 0 {
-		config.RetryCount = 3
+	if config.MaxRetries == 0 {
+		config.MaxRetries = 3
 	}
-	if config.BackoffFunc == nil {
-		config.BackoffFunc = ExponentialBackoff
+	if config.RetryDelay == 0 {
+		config.RetryDelay = 1 * time.Second
 	}
-	if config.Logger == nil {
-		config.Logger = NewDefaultLogger()
+	if config.UserAgent == "" {
+		config.UserAgent = "raven-betanet-dual-cli/1.0"
+	}
+	if !config.FollowRedirects {
+		config.FollowRedirects = true
+	}
+
+	// Create HTTP client
+	client := &http.Client{
+		Timeout: config.Timeout,
+	}
+
+	// Configure redirect policy
+	if !config.FollowRedirects {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
 	}
 
 	return &HTTPClient{
-		client: &http.Client{
-			Timeout: config.Timeout,
-		},
-		retryCount:  config.RetryCount,
-		backoffFunc: config.BackoffFunc,
-		logger:      config.Logger,
+		client: client,
+		config: config,
+		logger: NewDefaultLogger(),
 	}
 }
 
@@ -56,183 +77,307 @@ func NewDefaultHTTPClient() *HTTPClient {
 	return NewHTTPClient(HTTPClientConfig{})
 }
 
+// SetLogger sets the logger for the HTTP client
+func (h *HTTPClient) SetLogger(logger *Logger) {
+	h.logger = logger
+}
+
 // Get performs a GET request with retry logic
-func (h *HTTPClient) Get(url string) (*http.Response, error) {
+func (h *HTTPClient) Get(url string) (*HTTPResponse, error) {
 	return h.GetWithContext(context.Background(), url)
 }
 
-// GetWithContext performs a GET request with retry logic and context
-func (h *HTTPClient) GetWithContext(ctx context.Context, url string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// GetWithContext performs a GET request with context and retry logic
+func (h *HTTPClient) GetWithContext(ctx context.Context, url string) (*HTTPResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create GET request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	return h.DoWithRetry(req)
+
+	return h.Do(req)
 }
 
 // Post performs a POST request with retry logic
-func (h *HTTPClient) Post(url string, contentType string, body io.Reader) (*http.Response, error) {
+func (h *HTTPClient) Post(url, contentType string, body io.Reader) (*HTTPResponse, error) {
 	return h.PostWithContext(context.Background(), url, contentType, body)
 }
 
-// PostWithContext performs a POST request with retry logic and context
-func (h *HTTPClient) PostWithContext(ctx context.Context, url string, contentType string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+// PostWithContext performs a POST request with context and retry logic
+func (h *HTTPClient) PostWithContext(ctx context.Context, url, contentType string, body io.Reader) (*HTTPResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create POST request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	return h.DoWithRetry(req)
+
+	return h.Do(req)
 }
 
-// DoWithRetry executes an HTTP request with retry logic
-func (h *HTTPClient) DoWithRetry(req *http.Request) (*http.Response, error) {
+// Do executes an HTTP request with retry logic
+func (h *HTTPClient) Do(req *http.Request) (*HTTPResponse, error) {
+	return h.DoWithRetry(req, h.config.MaxRetries)
+}
+
+// DoWithRetry executes an HTTP request with custom retry count
+func (h *HTTPClient) DoWithRetry(req *http.Request, maxRetries int) (*HTTPResponse, error) {
+	// Set User-Agent header
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", h.config.UserAgent)
+	}
+
 	var lastErr error
 	
-	for attempt := 0; attempt <= h.retryCount; attempt++ {
-		// Clone the request for each attempt (in case body needs to be re-read)
-		reqClone := req.Clone(req.Context())
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		start := time.Now()
 		
-		h.logger.WithContext(map[string]interface{}{
-			"url":     req.URL.String(),
-			"method":  req.Method,
-			"attempt": attempt + 1,
-			"max_attempts": h.retryCount + 1,
-		}).Debug("Making HTTP request")
+		// Clone request for retry attempts
+		reqClone := h.cloneRequest(req)
+		
+		h.logger.WithComponent("http-client").Debugf("Attempting request to %s (attempt %d/%d)", req.URL.String(), attempt+1, maxRetries+1)
 		
 		resp, err := h.client.Do(reqClone)
+		duration := time.Since(start)
+		
 		if err != nil {
 			lastErr = err
-			if attempt < h.retryCount && h.shouldRetry(err, nil) {
-				backoff := h.backoffFunc(attempt)
-				h.logger.WithContext(map[string]interface{}{
-					"error":    err.Error(),
-					"backoff":  backoff.String(),
-					"attempt":  attempt + 1,
-				}).Warn("HTTP request failed, retrying")
-				
-				select {
-				case <-time.After(backoff):
-					continue
-				case <-req.Context().Done():
-					return nil, req.Context().Err()
-				}
+			h.logger.WithComponent("http-client").Warnf("Request failed (attempt %d/%d): %v", attempt+1, maxRetries+1, err)
+			
+			// Don't retry on context cancellation
+			if req.Context().Err() != nil {
+				return nil, fmt.Errorf("request cancelled: %w", err)
+			}
+			
+			// Wait before retry (except on last attempt)
+			if attempt < maxRetries {
+				h.waitForRetry(attempt)
 			}
 			continue
 		}
-		
+
 		// Check if we should retry based on status code
-		if h.shouldRetry(nil, resp) {
-			if attempt < h.retryCount {
-				resp.Body.Close() // Close the response body before retrying
-				lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-				
-				backoff := h.backoffFunc(attempt)
-				h.logger.WithContext(map[string]interface{}{
-					"status_code": resp.StatusCode,
-					"status":      resp.Status,
-					"backoff":     backoff.String(),
-					"attempt":     attempt + 1,
-				}).Warn("HTTP request returned retryable status, retrying")
-				
-				select {
-				case <-time.After(backoff):
-					continue
-				case <-req.Context().Done():
-					return nil, req.Context().Err()
-				}
-			} else {
-				// Exhausted retries with retryable status
-				resp.Body.Close()
-				lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-				continue
-			}
+		if h.shouldRetry(resp.StatusCode) && attempt < maxRetries {
+			resp.Body.Close()
+			h.logger.WithComponent("http-client").Warnf("Request returned %d, retrying (attempt %d/%d)", resp.StatusCode, attempt+1, maxRetries+1)
+			h.waitForRetry(attempt)
+			continue
 		}
-		
+
 		// Success or non-retryable error
-		if resp.StatusCode >= 400 {
-			h.logger.WithContext(map[string]interface{}{
-				"status_code": resp.StatusCode,
-				"status":      resp.Status,
-			}).Error("HTTP request failed with non-retryable status")
-		} else {
-			h.logger.WithContext(map[string]interface{}{
-				"status_code": resp.StatusCode,
-				"status":      resp.Status,
-			}).Debug("HTTP request successful")
-		}
+		h.logger.WithComponent("http-client").Debugf("Request completed: %s %d in %v", req.URL.String(), resp.StatusCode, duration)
 		
-		return resp, nil
+		return &HTTPResponse{
+			Response: resp,
+			Duration: duration,
+			Attempt:  attempt + 1,
+		}, nil
 	}
-	
-	return nil, fmt.Errorf("HTTP request failed after %d attempts: %w", h.retryCount+1, lastErr)
+
+	return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
-// shouldRetry determines if a request should be retried based on error or response
-func (h *HTTPClient) shouldRetry(err error, resp *http.Response) bool {
-	// Retry on network errors
-	if err != nil {
+// cloneRequest creates a copy of an HTTP request
+func (h *HTTPClient) cloneRequest(req *http.Request) *http.Request {
+	reqClone := req.Clone(req.Context())
+	
+	// Clone headers
+	reqClone.Header = make(http.Header)
+	for key, values := range req.Header {
+		reqClone.Header[key] = append([]string(nil), values...)
+	}
+	
+	return reqClone
+}
+
+// shouldRetry determines if a request should be retried based on status code
+func (h *HTTPClient) shouldRetry(statusCode int) bool {
+	// Retry on server errors and some client errors
+	switch statusCode {
+	case http.StatusTooManyRequests,     // 429
+		 http.StatusInternalServerError,  // 500
+		 http.StatusBadGateway,          // 502
+		 http.StatusServiceUnavailable,  // 503
+		 http.StatusGatewayTimeout:      // 504
 		return true
+	default:
+		return false
+	}
+}
+
+// waitForRetry waits before retrying a request with exponential backoff
+func (h *HTTPClient) waitForRetry(attempt int) {
+	// Exponential backoff: delay * (2^attempt)
+	delay := h.config.RetryDelay * time.Duration(1<<uint(attempt))
+	
+	// Cap the delay at 30 seconds
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
 	}
 	
-	// Retry on specific HTTP status codes
-	if resp != nil {
-		switch resp.StatusCode {
-		case http.StatusTooManyRequests,     // 429
-			 http.StatusInternalServerError,  // 500
-			 http.StatusBadGateway,          // 502
-			 http.StatusServiceUnavailable,  // 503
-			 http.StatusGatewayTimeout:      // 504
-			return true
+	h.logger.WithComponent("http-client").Debugf("Waiting %v before retry", delay)
+	time.Sleep(delay)
+}
+
+// GetJSON performs a GET request and unmarshals JSON response
+func (h *HTTPClient) GetJSON(url string, target interface{}) error {
+	return h.GetJSONWithContext(context.Background(), url, target)
+}
+
+// GetJSONWithContext performs a GET request with context and unmarshals JSON response
+func (h *HTTPClient) GetJSONWithContext(ctx context.Context, url string, target interface{}) error {
+	resp, err := h.GetWithContext(ctx, url)
+	if err != nil {
+		return fmt.Errorf("GET request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// Check content type
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" && !strings.Contains(contentType, "application/json") {
+		h.logger.WithComponent("http-client").Warnf("Expected JSON content type, got: %s", contentType)
+	}
+
+	// Read and unmarshal response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON response: %w", err)
+	}
+
+	return nil
+}
+
+// PostJSON performs a POST request with JSON body and unmarshals JSON response
+func (h *HTTPClient) PostJSON(url string, requestBody, responseBody interface{}) error {
+	return h.PostJSONWithContext(context.Background(), url, requestBody, responseBody)
+}
+
+// PostJSONWithContext performs a POST request with context, JSON body and unmarshals JSON response
+func (h *HTTPClient) PostJSONWithContext(ctx context.Context, url string, requestBody, responseBody interface{}) error {
+	// Marshal request body
+	var body io.Reader
+	if requestBody != nil {
+		jsonData, err := json.Marshal(requestBody)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request body: %w", err)
 		}
+		body = strings.NewReader(string(jsonData))
 	}
-	
-	return false
+
+	resp, err := h.PostWithContext(ctx, url, "application/json", body)
+	if err != nil {
+		return fmt.Errorf("POST request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// If no response body expected, return early
+	if responseBody == nil {
+		return nil
+	}
+
+	// Read and unmarshal response
+	respData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if err := json.Unmarshal(respData, responseBody); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON response: %w", err)
+	}
+
+	return nil
 }
 
-// ExponentialBackoff implements exponential backoff with jitter
-func ExponentialBackoff(attempt int) time.Duration {
-	if attempt < 0 {
-		attempt = 0
-	}
-	
-	// Base delay of 1 second, exponentially increasing
-	delay := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-	
-	// Cap at 30 seconds
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
-	}
-	
-	// Add jitter (±25% of delay)
-	jitter := time.Duration(float64(delay) * 0.25)
-	delay = delay + time.Duration(float64(jitter)*(2*rand.Float64()-1))
-	
-	if delay < 0 {
-		delay = time.Second
-	}
-	
-	// Ensure we don't exceed the cap after jitter
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
-	}
-	
-	return delay
+// DownloadFile downloads a file from the given URL
+func (h *HTTPClient) DownloadFile(url, filepath string) error {
+	return h.DownloadFileWithContext(context.Background(), url, filepath)
 }
 
-// LinearBackoff implements linear backoff
-func LinearBackoff(attempt int) time.Duration {
-	if attempt < 0 {
-		attempt = 0
+// DownloadFileWithContext downloads a file from the given URL with context
+func (h *HTTPClient) DownloadFileWithContext(ctx context.Context, url, filepath string) error {
+	resp, err := h.GetWithContext(ctx, url)
+	if err != nil {
+		return fmt.Errorf("failed to download file: %w", err)
 	}
-	return time.Duration(attempt+1) * time.Second
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// Create the file
+	file, err := os.Create(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	// Copy response body to file
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	h.logger.WithComponent("http-client").Infof("Downloaded file: %s -> %s", url, filepath)
+	return nil
 }
 
-// FixedBackoff implements fixed delay backoff
-func FixedBackoff(delay time.Duration) func(int) time.Duration {
-	return func(attempt int) time.Duration {
-		return delay
-	}
+// CheckURL checks if a URL is accessible (HEAD request)
+func (h *HTTPClient) CheckURL(url string) error {
+	return h.CheckURLWithContext(context.Background(), url)
 }
+
+// CheckURLWithContext checks if a URL is accessible with context (HEAD request)
+func (h *HTTPClient) CheckURLWithContext(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create HEAD request: %w", err)
+	}
+
+	resp, err := h.Do(req)
+	if err != nil {
+		return fmt.Errorf("HEAD request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("URL not accessible: HTTP %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// GetConfig returns the HTTP client configuration
+func (h *HTTPClient) GetConfig() HTTPClientConfig {
+	return h.config
+}
+
+// SetTimeout updates the client timeout
+func (h *HTTPClient) SetTimeout(timeout time.Duration) {
+	h.config.Timeout = timeout
+	h.client.Timeout = timeout
+}
+
+// SetMaxRetries updates the maximum retry count
+func (h *HTTPClient) SetMaxRetries(maxRetries int) {
+	h.config.MaxRetries = maxRetries
+}
+
+// SetUserAgent updates the User-Agent header
+func (h *HTTPClient) SetUserAgent(userAgent string) {
+	h.config.UserAgent = userAgent
+}
+

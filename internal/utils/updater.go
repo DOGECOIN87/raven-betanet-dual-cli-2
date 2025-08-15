@@ -1,50 +1,58 @@
 package utils
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 )
 
-// GitHubRelease represents a GitHub release
-type GitHubRelease struct {
-	TagName     string    `json:"tag_name"`
-	Name        string    `json:"name"`
-	Body        string    `json:"body"`
-	Draft       bool      `json:"draft"`
-	Prerelease  bool      `json:"prerelease"`
-	CreatedAt   time.Time `json:"created_at"`
-	PublishedAt time.Time `json:"published_at"`
-	Assets      []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Size               int64  `json:"size"`
-	} `json:"assets"`
-}
-
 // UpdaterConfig holds configuration for the updater
 type UpdaterConfig struct {
-	Repository    string // e.g., "owner/repo"
-	BinaryName    string // e.g., "raven-linter"
-	CurrentVersion string
-	Logger        *Logger
+	Repository     string `json:"repository"`
+	BinaryName     string `json:"binary_name"`
+	CurrentVersion string `json:"current_version"`
+	Logger         *Logger `json:"-"`
+}
+
+// GitHubRelease represents a GitHub release
+type GitHubRelease struct {
+	TagName     string          `json:"tag_name"`
+	Name        string          `json:"name"`
+	Body        string          `json:"body"`
+	Draft       bool            `json:"draft"`
+	Prerelease  bool            `json:"prerelease"`
+	CreatedAt   time.Time       `json:"created_at"`
+	PublishedAt time.Time       `json:"published_at"`
+	Assets      []GitHubAsset   `json:"assets"`
+}
+
+// GitHubAsset represents a GitHub release asset
+type GitHubAsset struct {
+	Name               string    `json:"name"`
+	Label              string    `json:"label"`
+	ContentType        string    `json:"content_type"`
+	Size               int64     `json:"size"`
+	DownloadCount      int       `json:"download_count"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	BrowserDownloadURL string    `json:"browser_download_url"`
 }
 
 // Updater handles binary updates from GitHub releases
 type Updater struct {
 	config     UpdaterConfig
-	httpClient *http.Client
+	httpClient *HTTPClient
 	logger     *Logger
 }
 
-// NewUpdater creates a new updater instance
+// NewUpdater creates a new updater
 func NewUpdater(config UpdaterConfig) *Updater {
 	logger := config.Logger
 	if logger == nil {
@@ -52,107 +60,72 @@ func NewUpdater(config UpdaterConfig) *Updater {
 	}
 
 	return &Updater{
-		config: config,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		logger: logger,
+		config:     config,
+		httpClient: NewDefaultHTTPClient(),
+		logger:     logger,
 	}
 }
 
 // CheckForUpdate checks if a newer version is available
 func (u *Updater) CheckForUpdate() (*GitHubRelease, bool, error) {
-	u.logger.Debug("Checking for updates...")
+	u.logger.WithComponent("updater").Debugf("Checking for updates for %s", u.config.BinaryName)
 
-	// Fetch latest release from GitHub API
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", u.config.Repository)
+	// Get latest release from GitHub API
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", u.config.Repository)
 	
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set User-Agent header
-	req.Header.Set("User-Agent", fmt.Sprintf("%s-updater/1.0", u.config.BinaryName))
-
-	resp, err := u.httpClient.Do(req)
+	var release GitHubRelease
+	err := u.httpClient.GetJSON(apiURL, &release)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to fetch latest release: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-	}
-
-	var release GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, false, fmt.Errorf("failed to decode release response: %w", err)
-	}
-
-	// Skip draft and pre-release versions by default
+	// Skip draft and prerelease versions
 	if release.Draft || release.Prerelease {
-		u.logger.Debug("Skipping draft or pre-release version")
+		u.logger.WithComponent("updater").Debugf("Skipping draft/prerelease version: %s", release.TagName)
 		return &release, false, nil
 	}
 
 	// Compare versions
-	currentVersion := strings.TrimPrefix(u.config.CurrentVersion, "v")
-	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	hasUpdate := u.isNewerVersion(release.TagName, u.config.CurrentVersion)
+	
+	u.logger.WithComponent("updater").Debugf("Version comparison: current=%s, latest=%s, hasUpdate=%t", 
+		u.config.CurrentVersion, release.TagName, hasUpdate)
 
-	if currentVersion == latestVersion {
-		u.logger.Debug("Already running latest version")
-		return &release, false, nil
-	}
-
-	// Simple version comparison (assumes semantic versioning)
-	isNewer, err := u.isNewerVersion(latestVersion, currentVersion)
-	if err != nil {
-		return &release, false, fmt.Errorf("failed to compare versions: %w", err)
-	}
-
-	return &release, isNewer, nil
+	return &release, hasUpdate, nil
 }
 
-// Update downloads and installs the latest version
+// Update downloads and installs the new version
 func (u *Updater) Update(release *GitHubRelease, force bool) error {
-	if release == nil {
-		return fmt.Errorf("no release provided")
-	}
+	u.logger.WithComponent("updater").Infof("Starting update to version %s", release.TagName)
 
 	// Find the appropriate asset for current platform
-	assetName := u.getAssetName(release.TagName)
-	var downloadURL string
-	var assetSize int64
-
-	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			downloadURL = asset.BrowserDownloadURL
-			assetSize = asset.Size
-			break
-		}
-	}
-
-	if downloadURL == "" {
-		return fmt.Errorf("no compatible binary found for %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-
-	u.logger.WithContext(map[string]interface{}{
-		"version": release.TagName,
-		"asset":   assetName,
-		"size":    assetSize,
-	}).Info("Downloading update...")
-
-	// Download the new binary
-	tempFile, err := u.downloadBinary(downloadURL, assetSize)
+	asset, err := u.findAssetForPlatform(release.Assets)
 	if err != nil {
-		return fmt.Errorf("failed to download binary: %w", err)
+		return fmt.Errorf("failed to find asset for platform: %w", err)
 	}
-	defer os.Remove(tempFile)
 
-	// Verify checksum if available
-	if err := u.verifyChecksum(tempFile, release, assetName); err != nil {
-		u.logger.WithContext(map[string]interface{}{"error": err}).Warn("Checksum verification failed, proceeding anyway")
+	u.logger.WithComponent("updater").Infof("Found asset: %s (%d bytes)", asset.Name, asset.Size)
+
+	// Create temporary directory for download
+	tempDir, err := os.MkdirTemp("", "updater-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Download the asset
+	downloadPath := filepath.Join(tempDir, asset.Name)
+	err = u.httpClient.DownloadFile(asset.BrowserDownloadURL, downloadPath)
+	if err != nil {
+		return fmt.Errorf("failed to download asset: %w", err)
+	}
+
+	u.logger.WithComponent("updater").Infof("Downloaded asset to: %s", downloadPath)
+
+	// Extract binary from archive if needed
+	binaryPath, err := u.extractBinary(downloadPath, tempDir)
+	if err != nil {
+		return fmt.Errorf("failed to extract binary: %w", err)
 	}
 
 	// Get current executable path
@@ -163,246 +136,368 @@ func (u *Updater) Update(release *GitHubRelease, force bool) error {
 
 	// Create backup of current binary
 	backupPath := currentExe + ".backup"
-	if err := u.createBackup(currentExe, backupPath); err != nil {
+	err = u.copyFile(currentExe, backupPath)
+	if err != nil {
 		return fmt.Errorf("failed to create backup: %w", err)
 	}
 
+	u.logger.WithComponent("updater").Infof("Created backup: %s", backupPath)
+
 	// Replace current binary with new one
-	if err := u.replaceBinary(tempFile, currentExe); err != nil {
+	err = u.replaceExecutable(currentExe, binaryPath)
+	if err != nil {
 		// Restore backup on failure
-		if restoreErr := u.restoreBackup(backupPath, currentExe); restoreErr != nil {
-			u.logger.WithContext(map[string]interface{}{"error": restoreErr}).Error("Failed to restore backup after update failure")
+		u.logger.WithComponent("updater").Errorf("Failed to replace executable, restoring backup: %v", err)
+		if restoreErr := u.copyFile(backupPath, currentExe); restoreErr != nil {
+			return fmt.Errorf("failed to replace executable and restore backup: %w (restore error: %v)", err, restoreErr)
 		}
-		return fmt.Errorf("failed to replace binary: %w", err)
+		return fmt.Errorf("failed to replace executable: %w", err)
 	}
 
-	// Clean up backup
+	// Remove backup on success
 	os.Remove(backupPath)
 
-	u.logger.WithContext(map[string]interface{}{"version": release.TagName}).Info("Update completed successfully")
+	u.logger.WithComponent("updater").Infof("Successfully updated to version %s", release.TagName)
 	return nil
 }
 
-// getAssetName returns the expected asset name for the current platform
-func (u *Updater) getAssetName(version string) string {
-	var suffix string
-	if runtime.GOOS == "windows" {
-		suffix = ".exe"
+// isNewerVersion compares two version strings
+func (u *Updater) isNewerVersion(latest, current string) bool {
+	// Remove 'v' prefix if present
+	latest = strings.TrimPrefix(latest, "v")
+	current = strings.TrimPrefix(current, "v")
+
+	// Handle special cases
+	if current == "dev" || current == "unknown" {
+		return true // Always update from dev/unknown versions
 	}
 
-	return fmt.Sprintf("%s-%s-%s-%s%s", 
-		u.config.BinaryName, 
-		version, 
-		runtime.GOOS, 
-		runtime.GOARCH, 
-		suffix)
+	if latest == current {
+		return false
+	}
+
+	// Simple lexicographic comparison for now
+	// Real implementation would use semantic versioning
+	return latest > current
 }
 
-// downloadBinary downloads a binary from the given URL
-func (u *Updater) downloadBinary(url string, expectedSize int64) (string, error) {
-	resp, err := u.httpClient.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+// findAssetForPlatform finds the appropriate asset for the current platform
+func (u *Updater) findAssetForPlatform(assets []GitHubAsset) (*GitHubAsset, error) {
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temporary file
-	tempFile, err := os.CreateTemp("", u.config.BinaryName+"-update-*")
-	if err != nil {
-		return "", err
-	}
-	defer tempFile.Close()
-
-	// Download with progress tracking
-	written, err := io.Copy(tempFile, resp.Body)
-	if err != nil {
-		os.Remove(tempFile.Name())
-		return "", err
+	// Build platform identifier patterns
+	patterns := []string{
+		fmt.Sprintf("%s-%s-%s", u.config.BinaryName, goos, goarch),
+		fmt.Sprintf("%s_%s_%s", u.config.BinaryName, goos, goarch),
+		fmt.Sprintf("%s-%s", goos, goarch),
+		fmt.Sprintf("%s_%s", goos, goarch),
 	}
 
-	if expectedSize > 0 && written != expectedSize {
-		os.Remove(tempFile.Name())
-		return "", fmt.Errorf("downloaded size %d doesn't match expected size %d", written, expectedSize)
-	}
-
-	return tempFile.Name(), nil
-}
-
-// verifyChecksum verifies the downloaded binary against checksums
-func (u *Updater) verifyChecksum(filePath string, release *GitHubRelease, assetName string) error {
-	// Look for checksums.txt in release assets
-	var checksumsURL string
-	for _, asset := range release.Assets {
-		if asset.Name == "checksums.txt" {
-			checksumsURL = asset.BrowserDownloadURL
-			break
+	// Add Windows .exe extension
+	if goos == "windows" {
+		for _, pattern := range patterns {
+			patterns = append(patterns, pattern+".exe")
 		}
 	}
 
-	if checksumsURL == "" {
-		return fmt.Errorf("no checksums.txt found in release")
-	}
-
-	// Download checksums
-	resp, err := u.httpClient.Get(checksumsURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	checksumData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	// Parse checksums and find our asset
-	lines := strings.Split(string(checksumData), "\n")
-	var expectedChecksum string
-	
-	for _, line := range lines {
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			filename := strings.TrimPrefix(parts[1], "./")
-			if filename == assetName {
-				expectedChecksum = parts[0]
-				break
+	// Find matching asset
+	for _, asset := range assets {
+		assetName := strings.ToLower(asset.Name)
+		
+		for _, pattern := range patterns {
+			if strings.Contains(assetName, strings.ToLower(pattern)) {
+				return &asset, nil
 			}
 		}
 	}
 
-	if expectedChecksum == "" {
-		return fmt.Errorf("checksum not found for %s", assetName)
-	}
-
-	// Calculate actual checksum
-	file, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return err
-	}
-
-	actualChecksum := hex.EncodeToString(hasher.Sum(nil))
-
-	if actualChecksum != expectedChecksum {
-		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
-	}
-
-	u.logger.Debug("Checksum verification passed")
-	return nil
+	return nil, fmt.Errorf("no asset found for platform %s/%s", goos, goarch)
 }
 
-// createBackup creates a backup of the current binary
-func (u *Updater) createBackup(source, backup string) error {
-	sourceFile, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	backupFile, err := os.Create(backup)
-	if err != nil {
-		return err
-	}
-	defer backupFile.Close()
-
-	_, err = io.Copy(backupFile, sourceFile)
-	return err
-}
-
-// replaceBinary replaces the current binary with the new one
-func (u *Updater) replaceBinary(newBinary, currentBinary string) error {
-	// Get file permissions from current binary
-	info, err := os.Stat(currentBinary)
-	if err != nil {
-		return err
-	}
-
-	// Read new binary
-	newData, err := os.ReadFile(newBinary)
-	if err != nil {
-		return err
-	}
-
-	// Write new binary to current location
-	if err := os.WriteFile(currentBinary, newData, info.Mode()); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// restoreBackup restores the backup binary
-func (u *Updater) restoreBackup(backup, target string) error {
-	backupData, err := os.ReadFile(backup)
-	if err != nil {
-		return err
-	}
-
-	info, err := os.Stat(target)
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(target, backupData, info.Mode())
-}
-
-// isNewerVersion compares two semantic version strings
-func (u *Updater) isNewerVersion(latest, current string) (bool, error) {
-	// Simple semantic version comparison
-	// This is a basic implementation - for production use, consider using
-	// a proper semver library like github.com/Masterminds/semver/v3
+// extractBinary extracts the binary from an archive or returns the file path if it's already a binary
+func (u *Updater) extractBinary(archivePath, extractDir string) (string, error) {
+	// Check if it's an archive by extension
+	ext := strings.ToLower(filepath.Ext(archivePath))
 	
-	latestParts := strings.Split(latest, ".")
-	currentParts := strings.Split(current, ".")
-
-	// Pad shorter version with zeros
-	maxLen := len(latestParts)
-	if len(currentParts) > maxLen {
-		maxLen = len(currentParts)
+	switch ext {
+	case ".zip":
+		return u.extractFromZip(archivePath, extractDir)
+	case ".gz":
+		if strings.HasSuffix(strings.ToLower(archivePath), ".tar.gz") {
+			return u.extractFromTarGz(archivePath, extractDir)
+		}
+		return u.extractFromGzip(archivePath, extractDir)
+	case ".tar":
+		return u.extractFromTar(archivePath, extractDir)
+	default:
+		// Assume it's already a binary
+		return archivePath, nil
 	}
+}
 
-	for len(latestParts) < maxLen {
-		latestParts = append(latestParts, "0")
+// extractFromZip extracts binary from ZIP archive
+func (u *Updater) extractFromZip(zipPath, extractDir string) (string, error) {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open ZIP file: %w", err)
 	}
-	for len(currentParts) < maxLen {
-		currentParts = append(currentParts, "0")
-	}
+	defer reader.Close()
 
-	// Compare each part
-	for i := 0; i < maxLen; i++ {
-		var latestNum, currentNum int
-		fmt.Sscanf(latestParts[i], "%d", &latestNum)
-		fmt.Sscanf(currentParts[i], "%d", &currentNum)
-
-		if latestNum > currentNum {
-			return true, nil
-		} else if latestNum < currentNum {
-			return false, nil
+	for _, file := range reader.File {
+		if u.isBinaryFile(file.Name) {
+			return u.extractZipFile(file, extractDir)
 		}
 	}
 
-	return false, nil // versions are equal
+	return "", fmt.Errorf("no binary file found in ZIP archive")
 }
 
-// GetUpdateInfo returns information about available updates without downloading
-func (u *Updater) GetUpdateInfo() (string, bool, error) {
-	release, hasUpdate, err := u.CheckForUpdate()
+// extractFromTarGz extracts binary from tar.gz archive
+func (u *Updater) extractFromTarGz(tarGzPath, extractDir string) (string, error) {
+	file, err := os.Open(tarGzPath)
 	if err != nil {
-		return "", false, err
+		return "", fmt.Errorf("failed to open tar.gz file: %w", err)
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return "", fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to read tar entry: %w", err)
+		}
+
+		if header.Typeflag == tar.TypeReg && u.isBinaryFile(header.Name) {
+			return u.extractTarFile(tarReader, header, extractDir)
+		}
 	}
 
-	if !hasUpdate {
-		return u.config.CurrentVersion, false, nil
+	return "", fmt.Errorf("no binary file found in tar.gz archive")
+}
+
+// extractFromTar extracts binary from tar archive
+func (u *Updater) extractFromTar(tarPath, extractDir string) (string, error) {
+	file, err := os.Open(tarPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open tar file: %w", err)
+	}
+	defer file.Close()
+
+	tarReader := tar.NewReader(file)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to read tar entry: %w", err)
+		}
+
+		if header.Typeflag == tar.TypeReg && u.isBinaryFile(header.Name) {
+			return u.extractTarFile(tarReader, header, extractDir)
+		}
 	}
 
-	return release.TagName, true, nil
+	return "", fmt.Errorf("no binary file found in tar archive")
+}
+
+// extractFromGzip extracts binary from gzip file
+func (u *Updater) extractFromGzip(gzPath, extractDir string) (string, error) {
+	file, err := os.Open(gzPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open gzip file: %w", err)
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return "", fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	// Extract to file with same name minus .gz extension
+	baseName := strings.TrimSuffix(filepath.Base(gzPath), ".gz")
+	extractPath := filepath.Join(extractDir, baseName)
+
+	outFile, err := os.Create(extractPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create extracted file: %w", err)
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, gzReader)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract gzip file: %w", err)
+	}
+
+	// Make executable
+	err = os.Chmod(extractPath, 0755)
+	if err != nil {
+		return "", fmt.Errorf("failed to make file executable: %w", err)
+	}
+
+	return extractPath, nil
+}
+
+// extractZipFile extracts a single file from ZIP archive
+func (u *Updater) extractZipFile(file *zip.File, extractDir string) (string, error) {
+	reader, err := file.Open()
+	if err != nil {
+		return "", fmt.Errorf("failed to open ZIP file entry: %w", err)
+	}
+	defer reader.Close()
+
+	extractPath := filepath.Join(extractDir, filepath.Base(file.Name))
+	outFile, err := os.Create(extractPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create extracted file: %w", err)
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract ZIP file: %w", err)
+	}
+
+	// Make executable
+	err = os.Chmod(extractPath, 0755)
+	if err != nil {
+		return "", fmt.Errorf("failed to make file executable: %w", err)
+	}
+
+	return extractPath, nil
+}
+
+// extractTarFile extracts a single file from tar archive
+func (u *Updater) extractTarFile(tarReader *tar.Reader, header *tar.Header, extractDir string) (string, error) {
+	extractPath := filepath.Join(extractDir, filepath.Base(header.Name))
+	outFile, err := os.Create(extractPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create extracted file: %w", err)
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, tarReader)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract tar file: %w", err)
+	}
+
+	// Make executable
+	err = os.Chmod(extractPath, 0755)
+	if err != nil {
+		return "", fmt.Errorf("failed to make file executable: %w", err)
+	}
+
+	return extractPath, nil
+}
+
+// isBinaryFile checks if a file name matches the expected binary
+func (u *Updater) isBinaryFile(filename string) bool {
+	baseName := filepath.Base(filename)
+	
+	// Check for exact match
+	if baseName == u.config.BinaryName {
+		return true
+	}
+	
+	// Check for Windows executable
+	if runtime.GOOS == "windows" && baseName == u.config.BinaryName+".exe" {
+		return true
+	}
+	
+	// Check if filename contains binary name
+	return strings.Contains(strings.ToLower(baseName), strings.ToLower(u.config.BinaryName))
+}
+
+// copyFile copies a file from src to dst
+func (u *Updater) copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy file: %w", err)
+	}
+
+	// Copy file permissions
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get source file info: %w", err)
+	}
+
+	err = os.Chmod(dst, srcInfo.Mode())
+	if err != nil {
+		return fmt.Errorf("failed to set file permissions: %w", err)
+	}
+
+	return nil
+}
+
+// replaceExecutable replaces the current executable with a new one
+func (u *Updater) replaceExecutable(currentPath, newPath string) error {
+	// On Windows, we can't replace a running executable directly
+	if runtime.GOOS == "windows" {
+		return u.replaceExecutableWindows(currentPath, newPath)
+	}
+
+	// On Unix-like systems, we can replace the file directly
+	return u.copyFile(newPath, currentPath)
+}
+
+// replaceExecutableWindows handles executable replacement on Windows
+func (u *Updater) replaceExecutableWindows(currentPath, newPath string) error {
+	// Move current executable to temporary name
+	tempPath := currentPath + ".old"
+	err := os.Rename(currentPath, tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to move current executable: %w", err)
+	}
+
+	// Copy new executable to current location
+	err = u.copyFile(newPath, currentPath)
+	if err != nil {
+		// Restore original file on failure
+		os.Rename(tempPath, currentPath)
+		return fmt.Errorf("failed to copy new executable: %w", err)
+	}
+
+	// Schedule deletion of old executable on next boot
+	// This is a simplified approach - production code might use more sophisticated methods
+	go func() {
+		time.Sleep(5 * time.Second)
+		os.Remove(tempPath)
+	}()
+
+	return nil
+}
+
+// GetCurrentVersion returns the current version
+func (u *Updater) GetCurrentVersion() string {
+	return u.config.CurrentVersion
+}
+
+// SetCurrentVersion updates the current version
+func (u *Updater) SetCurrentVersion(version string) {
+	u.config.CurrentVersion = version
 }

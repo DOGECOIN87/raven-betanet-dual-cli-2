@@ -5,488 +5,355 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/raven-betanet/dual-cli/internal/checks"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-func TestNewBinaryComponentExtractor(t *testing.T) {
-	extractor := NewBinaryComponentExtractor()
-	
-	if extractor == nil {
-		t.Error("Expected extractor to be created")
-	}
-	
-	if extractor.parser == nil {
-		t.Error("Expected parser to be initialized")
-	}
-}
 
 func TestBinaryComponentExtractor_GetSupportedFormats(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
 	formats := extractor.GetSupportedFormats()
-	
-	expectedFormats := []string{"ELF", "PE", "Mach-O"}
-	
-	if len(formats) != len(expectedFormats) {
-		t.Errorf("Expected %d formats, got %d", len(expectedFormats), len(formats))
+
+	assert.Contains(t, formats, "ELF")
+	assert.Contains(t, formats, "PE")
+	assert.Contains(t, formats, "Mach-O")
+}
+
+func TestBinaryComponentExtractor_DetectBinaryFormat(t *testing.T) {
+	extractor := NewBinaryComponentExtractor()
+
+	tests := []struct {
+		name     string
+		header   []byte
+		expected string
+	}{
+		{
+			name:     "ELF format",
+			header:   []byte{0x7F, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00},
+			expected: "ELF",
+		},
+		{
+			name:     "PE format",
+			header:   []byte{'M', 'Z', 0x90, 0x00, 0x03, 0x00, 0x00, 0x00},
+			expected: "PE",
+		},
+		{
+			name:     "Mach-O format (feedface)",
+			header:   []byte{0xfe, 0xed, 0xfa, 0xce, 0x00, 0x00, 0x00, 0x00},
+			expected: "Mach-O",
+		},
+		{
+			name:     "Unknown format",
+			header:   []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07},
+			expected: "Unknown",
+		},
 	}
-	
-	for i, expected := range expectedFormats {
-		if formats[i] != expected {
-			t.Errorf("Expected format '%s', got '%s'", expected, formats[i])
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary file with test header
+			tempFile := createTempFileWithContent(t, tt.header)
+			defer os.Remove(tempFile)
+
+			format, err := extractor.detectBinaryFormat(tempFile)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, format)
+		})
 	}
 }
 
-func TestBinaryComponentExtractor_ExtractComponents_NonExistentFile(t *testing.T) {
+func TestBinaryComponentExtractor_CreateBasicComponent(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
 	
-	_, err := extractor.ExtractComponents("/non/existent/file")
-	if err == nil {
-		t.Error("Expected error for non-existent file")
-	}
-}
+	// Create a temporary file
+	tempFile := createTempFileWithContent(t, []byte("test content"))
+	defer os.Remove(tempFile)
 
-func TestBinaryComponentExtractor_ExtractComponents_ValidBinary(t *testing.T) {
-	// Create a temporary test binary file
-	tempDir := t.TempDir()
-	testBinary := filepath.Join(tempDir, "test-binary")
-	
-	// Create a simple ELF-like file (just the magic bytes for testing)
-	elfHeader := []byte{0x7F, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00}
-	elfHeader = append(elfHeader, make([]byte, 56)...) // Pad to minimum ELF header size
-	
-	err := os.WriteFile(testBinary, elfHeader, 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test binary: %v", err)
-	}
-	
-	extractor := NewBinaryComponentExtractor()
-	components, err := extractor.ExtractComponents(testBinary)
-	
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	
-	if len(components) == 0 {
-		t.Error("Expected at least one component (main application)")
-	}
-	
-	// Check that we have a main application component
-	hasMainApp := false
-	for _, comp := range components {
-		if comp.Type == ComponentTypeApplication {
-			hasMainApp = true
+	component := extractor.createBasicComponent(tempFile)
+
+	assert.Equal(t, ComponentTypeApplication, component.Type)
+	assert.Equal(t, filepath.Base(tempFile), component.Name)
+	assert.Equal(t, "unknown", component.Version)
+	assert.Equal(t, "Binary application (unknown format)", component.Description)
+
+	// Check properties
+	found := false
+	for _, prop := range component.Properties {
+		if prop.Name == "binary.format" && prop.Value == "unknown" {
+			found = true
 			break
 		}
 	}
-	
-	if !hasMainApp {
-		t.Error("Expected to find main application component")
-	}
+	assert.True(t, found, "Should have binary.format property")
 }
 
-func TestBinaryComponentExtractor_createMainComponent(t *testing.T) {
-	// Create a temporary test file
-	tempDir := t.TempDir()
-	testFile := filepath.Join(tempDir, "test-binary")
-	testContent := []byte("test binary content")
-	
-	err := os.WriteFile(testFile, testContent, 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-	
+func TestBinaryComponentExtractor_ExtractGoModules(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
-	
-	// Create mock binary info
-	binaryInfo := &checks.BinaryInfo{
-		Format:       checks.FormatELF,
-		Architecture: "x86_64",
-		Bitness:      64,
-		Endianness:   "little",
-		EntryPoint:   0x1000,
-		Sections:     []string{".text", ".data", ".bss"},
-		Dependencies: []string{},
-		Symbols:      []string{},
-		FileSize:     int64(len(testContent)),
-	}
-	
-	component, err := extractor.createMainComponent(testFile, binaryInfo)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	
-	if component.Type != ComponentTypeApplication {
-		t.Errorf("Expected component type %s, got %s", ComponentTypeApplication, component.Type)
-	}
-	
-	if component.Name != "test-binary" {
-		t.Errorf("Expected component name 'test-binary', got '%s'", component.Name)
-	}
-	
-	if component.BOMRef == "" {
-		t.Error("Expected BOM reference to be generated")
-	}
-	
-	if len(component.Hashes) == 0 {
-		t.Error("Expected component to have hash")
-	}
-	
-	if component.Hashes["sha256"] == "" {
-		t.Error("Expected SHA256 hash to be calculated")
-	}
-	
-	// Check properties
-	expectedProperties := map[string]string{
-		"binary.format":       "ELF",
-		"binary.architecture": "x86_64",
-		"binary.bitness":      "64",
-		"binary.endianness":   "little",
-		"binary.entry_point":  "0x1000",
-		"binary.file_size":    "19",
-		"binary.section_count": "3",
-		"binary.sections":     ".text,.data,.bss",
-	}
-	
-	for expectedName, expectedValue := range expectedProperties {
-		found := false
-		for _, prop := range component.Properties {
-			if prop.Name == expectedName && prop.Value == expectedValue {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected property %s=%s not found", expectedName, expectedValue)
+
+	content := `
+	github.com/example/module@v1.2.3
+	golang.org/x/crypto@v0.1.0
+	github.com/stretchr/testify@v1.8.4
+	invalid-module-format
+	`
+
+	modules := extractor.extractGoModules(content)
+
+	assert.Len(t, modules, 3)
+
+	// Check first module
+	assert.Equal(t, "module", modules[0].Name)
+	assert.Equal(t, "1.2.3", modules[0].Version)
+	assert.Equal(t, "github.com/example/module", modules[0].Path)
+
+	// Check second module
+	assert.Equal(t, "crypto", modules[1].Name)
+	assert.Equal(t, "0.1.0", modules[1].Version)
+	assert.Equal(t, "golang.org/x/crypto", modules[1].Path)
+}
+
+func TestBinaryComponentExtractor_ExtractRustCrates(t *testing.T) {
+	extractor := NewBinaryComponentExtractor()
+
+	content := `
+	serde-1.0.136
+	tokio-1.21.2
+	clap-4.0.32
+	lib-invalid  // Should be filtered out
+	`
+
+	crates := extractor.extractRustCrates(content)
+
+	assert.Len(t, crates, 3)
+
+	// Check first crate
+	assert.Equal(t, "serde", crates[0].Name)
+	assert.Equal(t, "1.0.136", crates[0].Version)
+
+	// Check second crate
+	assert.Equal(t, "tokio", crates[1].Name)
+	assert.Equal(t, "1.21.2", crates[1].Version)
+}
+
+func TestBinaryComponentExtractor_ExtractNodePackages(t *testing.T) {
+	extractor := NewBinaryComponentExtractor()
+
+	content := `
+	express@4.18.2
+	@types/node@18.11.9
+	lodash@4.17.21
+	invalid@format@test  // Should be handled gracefully
+	`
+
+	packages := extractor.extractNodePackages(content)
+
+	assert.GreaterOrEqual(t, len(packages), 2) // At least express and lodash
+
+	// Find express package
+	var expressFound bool
+	for _, pkg := range packages {
+		if pkg.Name == "express" && pkg.Version == "4.18.2" {
+			expressFound = true
+			break
 		}
 	}
-	
-	// Check evidence
-	if component.Evidence == nil {
-		t.Error("Expected component to have evidence")
-	}
-	
-	if component.Evidence.Identity == nil {
-		t.Error("Expected component to have identity evidence")
-	}
-	
-	if component.Evidence.Identity.Field != "binary_analysis" {
-		t.Errorf("Expected evidence field 'binary_analysis', got '%s'", component.Evidence.Identity.Field)
-	}
-	
-	if component.Evidence.Identity.Confidence != 1.0 {
-		t.Errorf("Expected evidence confidence 1.0, got %f", component.Evidence.Identity.Confidence)
-	}
+	assert.True(t, expressFound, "Should find express package")
 }
 
-func TestBinaryComponentExtractor_extractDependencyComponents(t *testing.T) {
+func TestBinaryComponentExtractor_ExtractPythonPackages(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
-	
-	binaryInfo := &checks.BinaryInfo{
-		Format:       checks.FormatELF,
-		Dependencies: []string{"libc.so.6", "libm.so.6", "libpthread.so.0"},
+
+	content := `
+	requests==2.28.1
+	numpy-1.24.1
+	django==4.1.4
+	lib==invalid  // Should be filtered out
+	`
+
+	packages := extractor.extractPythonPackages(content)
+
+	assert.GreaterOrEqual(t, len(packages), 2) // At least requests and numpy
+
+	// Find requests package
+	var requestsFound bool
+	for _, pkg := range packages {
+		if pkg.Name == "requests" && pkg.Version == "2.28.1" {
+			requestsFound = true
+			break
+		}
 	}
-	
-	components, err := extractor.extractDependencyComponents(binaryInfo, "main-ref")
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	
-	if len(components) != 3 {
-		t.Errorf("Expected 3 dependency components, got %d", len(components))
-	}
-	
-	// Check first dependency
-	comp := components[0]
-	if comp.Name != "libc" {
-		t.Errorf("Expected component name 'libc', got '%s'", comp.Name)
-	}
-	
-	if comp.Type != ComponentTypeOperatingSystem {
-		t.Errorf("Expected component type %s for libc, got %s", ComponentTypeOperatingSystem, comp.Type)
-	}
-	
-	if comp.Scope != ScopeRequired {
-		t.Errorf("Expected component scope %s, got %s", ScopeRequired, comp.Scope)
-	}
-	
-	// Check evidence
-	if comp.Evidence == nil {
-		t.Error("Expected dependency component to have evidence")
-	}
-	
-	if comp.Evidence.Identity.Field != "dependency_analysis" {
-		t.Errorf("Expected evidence field 'dependency_analysis', got '%s'", comp.Evidence.Identity.Field)
-	}
+	assert.True(t, requestsFound, "Should find requests package")
 }
 
-func TestBinaryComponentExtractor_createDependencyComponent(t *testing.T) {
+func TestBinaryComponentExtractor_IsValidRustCrateName(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
-	
+
 	tests := []struct {
-		depName      string
-		format       checks.BinaryFormat
-		expectedType ComponentType
-		expectedName string
-		expectedVersion string
-	}{
-		{"libc.so.6", checks.FormatELF, ComponentTypeOperatingSystem, "libc", "6"},
-		{"libqt5core.so.5.15.2", checks.FormatELF, ComponentTypeFramework, "libqt5core", "5.15.2"},
-		{"user32.dll", checks.FormatPE, ComponentTypeOperatingSystem, "user32.dll", "unknown"},
-		{"mylib-1.2.3.dll", checks.FormatPE, ComponentTypeLibrary, "mylib", "1.2.3"},
-		{"libssl.1.1.dylib", checks.FormatMachO, ComponentTypeLibrary, "libssl", "1.1"},
-	}
-	
-	for _, test := range tests {
-		comp := extractor.createDependencyComponent(test.depName, test.format)
-		
-		if comp.Type != test.expectedType {
-			t.Errorf("For %s: expected type %s, got %s", test.depName, test.expectedType, comp.Type)
-		}
-		
-		if comp.Name != test.expectedName {
-			t.Errorf("For %s: expected name '%s', got '%s'", test.depName, test.expectedName, comp.Name)
-		}
-		
-		if comp.Version != test.expectedVersion {
-			t.Errorf("For %s: expected version '%s', got '%s'", test.depName, test.expectedVersion, comp.Version)
-		}
-		
-		if comp.Scope != ScopeRequired {
-			t.Errorf("For %s: expected scope %s, got %s", test.depName, ScopeRequired, comp.Scope)
-		}
-	}
-}
-
-func TestBinaryComponentExtractor_inferComponentType(t *testing.T) {
-	extractor := NewBinaryComponentExtractor()
-	
-	tests := []struct {
-		depName      string
-		format       checks.BinaryFormat
-		expectedType ComponentType
-	}{
-		{"libqt5core.so", checks.FormatELF, ComponentTypeFramework},
-		{"libgtk-3.so", checks.FormatELF, ComponentTypeFramework},
-		{"libc.so.6", checks.FormatELF, ComponentTypeOperatingSystem},
-		{"kernel32.dll", checks.FormatPE, ComponentTypeOperatingSystem},
-		{"libpng.so", checks.FormatELF, ComponentTypeLibrary},
-		{"mylib.dll", checks.FormatPE, ComponentTypeLibrary},
-	}
-	
-	for _, test := range tests {
-		result := extractor.inferComponentType(test.depName, test.format)
-		if result != test.expectedType {
-			t.Errorf("For %s: expected type %s, got %s", test.depName, test.expectedType, result)
-		}
-	}
-}
-
-func TestBinaryComponentExtractor_parseNameVersion(t *testing.T) {
-	extractor := NewBinaryComponentExtractor()
-	
-	tests := []struct {
-		depName         string
-		expectedName    string
-		expectedVersion string
-	}{
-		{"libc.so.6", "libc", "6"},
-		{"libssl.so.1.1", "libssl", "1.1"},
-		{"libqt5core.so.5.15.2", "libqt5core", "5.15.2"},
-		{"mylib-1.2.3.dll", "mylib", "1.2.3"},
-		{"libssl.1.1.dylib", "libssl", "1.1"},
-		{"libpng.16.37.0.dylib", "libpng", "16.37.0"},
-		{"simple.dll", "simple.dll", "unknown"},
-		{"noversion", "noversion", "unknown"},
-	}
-	
-	for _, test := range tests {
-		name, version := extractor.parseNameVersion(test.depName)
-		if name != test.expectedName {
-			t.Errorf("For %s: expected name '%s', got '%s'", test.depName, test.expectedName, name)
-		}
-		if version != test.expectedVersion {
-			t.Errorf("For %s: expected version '%s', got '%s'", test.depName, test.expectedVersion, version)
-		}
-	}
-}
-
-func TestBinaryComponentExtractor_looksLikeVersion(t *testing.T) {
-	extractor := NewBinaryComponentExtractor()
-	
-	tests := []struct {
-		input    string
+		name     string
+		crateName string
 		expected bool
 	}{
-		{"1.2.3", true},
-		{"1.0", true},
-		{"2.15.1", true},
-		{"1.2.3-beta", true},
-		{"1.2.3_rc1", true},
-		{"abc", false},
-		{"", false},
-		{"1.2.3.xyz", false},
-		{"123", true},
+		{"valid crate", "serde", true},
+		{"valid crate with underscore", "serde_json", true},
+		{"invalid - too short", "ab", false},
+		{"invalid - lib", "lib", false},
+		{"invalid - std", "std", false},
+		{"invalid - too long", "this-is-a-very-long-crate-name-that-exceeds-the-limit", false},
 	}
-	
-	for _, test := range tests {
-		result := extractor.looksLikeVersion(test.input)
-		if result != test.expected {
-			t.Errorf("For '%s': expected %t, got %t", test.input, test.expected, result)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractor.isValidRustCrateName(tt.crateName)
+			assert.Equal(t, tt.expected, result)
+		})
 	}
 }
 
-func TestBinaryComponentExtractor_looksLikeVersionPart(t *testing.T) {
+func TestBinaryComponentExtractor_IsValidNodePackageName(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
-	
+
 	tests := []struct {
-		input    string
-		expected bool
+		name        string
+		packageName string
+		expected    bool
 	}{
-		{"1", true},
-		{"15", true},
-		{"1a", true},
-		{"2b", true},
-		{"3rc", true},
-		{"abc", false},
-		{"", false},
-		{"1x", false},
+		{"valid package", "express", true},
+		{"valid scoped package", "@types/node", true},
+		{"invalid - starts with dot", ".hidden", false},
+		{"invalid - contains double dots", "package..name", false},
+		{"invalid - too short", "a", false},
 	}
-	
-	for _, test := range tests {
-		result := extractor.looksLikeVersionPart(test.input)
-		if result != test.expected {
-			t.Errorf("For '%s': expected %t, got %t", test.input, test.expected, result)
-		}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractor.isValidNodePackageName(tt.packageName)
+			assert.Equal(t, tt.expected, result)
+		})
 	}
 }
 
-func TestBinaryComponentExtractor_groupSymbolsByLibrary(t *testing.T) {
+func TestBinaryComponentExtractor_IsValidPythonPackageName(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
-	
+
+	tests := []struct {
+		name        string
+		packageName string
+		expected    bool
+	}{
+		{"valid package", "requests", true},
+		{"valid package with underscore", "python_package", true},
+		{"invalid - too short", "ab", false},
+		{"invalid - lib", "lib", false},
+		{"invalid - src", "src", false},
+		{"invalid - too long", "this-is-a-very-long-python-package-name-that-exceeds", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractor.isValidPythonPackageName(tt.packageName)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBinaryComponentExtractor_InferLibrariesFromSymbols(t *testing.T) {
+	extractor := NewBinaryComponentExtractor()
+
 	symbols := []string{
-		"std::string::size",
-		"std::vector::push_back",
-		"boost::filesystem::path",
-		"boost::regex::match",
-		"gtk_window_new",
-		"gtk_widget_show",
-		"cairo_create",
-		"png_read_info",
+		"ssl_connect",
+		"SSL_library_init",
+		"crypto_hash",
+		"CRYPTO_malloc",
+		"z_compress",
+		"deflate",
+		"curl_easy_init",
+		"sqlite3_open",
+		"json_parse",
+		"xmlParseDoc",
+		"pthread_create",
 		"unknown_symbol",
-		"__internal_symbol",
 	}
-	
-	groups := extractor.groupSymbolsByLibrary(symbols)
-	
-	// Check that we have expected groups
-	expectedGroups := []string{"libstdc++", "boost", "GTK", "Cairo", "libpng"}
-	for _, expected := range expectedGroups {
-		if _, found := groups[expected]; !found {
-			t.Errorf("Expected to find group '%s'", expected)
-		}
+
+	components := extractor.inferLibrariesFromSymbols(symbols)
+
+	// Should find several libraries
+	assert.GreaterOrEqual(t, len(components), 5)
+
+	// Check that we found some expected libraries
+	libraryNames := make(map[string]bool)
+	for _, comp := range components {
+		libraryNames[comp.Name] = true
 	}
-	
-	// Check libstdc++ group
-	if len(groups["libstdc++"]) != 2 {
-		t.Errorf("Expected 2 symbols in libstdc++ group, got %d", len(groups["libstdc++"]))
-	}
-	
-	// Check boost group
-	if len(groups["boost"]) != 2 {
-		t.Errorf("Expected 2 symbols in boost group, got %d", len(groups["boost"]))
-	}
-	
-	// Check that internal symbols are not grouped
-	for groupName, symbols := range groups {
-		for _, symbol := range symbols {
-			if symbol == "__internal_symbol" {
-				t.Errorf("Internal symbol should not be in group '%s'", groupName)
-			}
-		}
-	}
+
+	assert.True(t, libraryNames["openssl"], "Should infer openssl from ssl_ symbols")
+	assert.True(t, libraryNames["libcrypto"], "Should infer libcrypto from crypto_ symbols")
+	assert.True(t, libraryNames["zlib"], "Should infer zlib from z_ symbols")
+	assert.True(t, libraryNames["libcurl"], "Should infer libcurl from curl_ symbols")
+	assert.True(t, libraryNames["sqlite3"], "Should infer sqlite3 from sqlite3_ symbols")
 }
 
-func TestBinaryComponentExtractor_inferLibraryFromSymbol(t *testing.T) {
+func TestBinaryComponentExtractor_ExtractComponents_UnknownFormat(t *testing.T) {
 	extractor := NewBinaryComponentExtractor()
-	
-	tests := []struct {
-		symbol   string
-		expected string
-	}{
-		{"std::string::size", "libstdc++"},
-		{"boost::filesystem::path", "boost"},
-		{"gtk_window_new", "GTK"},
-		{"g_malloc", "GLib"},
-		{"cairo_create", "Cairo"},
-		{"png_read_info", "libpng"},
-		{"jpeg_start_decompress", "libjpeg"},
-		{"ssl_connect", "OpenSSL"},
-		{"crypto_hash", "OpenSSL"},
-		{"curl_easy_init", "libcurl"},
-		{"sqlite3_open", "SQLite"},
-		{"mysql_connect", "MySQL"},
-		{"postgres_connect", "PostgreSQL"},
-		{"xmlParseDoc", "libxml2"},
-		{"json_parse", "JSON library"},
-		{"deflate", "zlib"},
-		{"BZ2_bzopen", "bzip2"},
-		{"__internal_symbol", ""},
-		{"unknown_symbol", ""},
-	}
-	
-	for _, test := range tests {
-		result := extractor.inferLibraryFromSymbol(test.symbol)
-		if result != test.expected {
-			t.Errorf("For symbol '%s': expected '%s', got '%s'", test.symbol, test.expected, result)
-		}
-	}
+
+	// Create a file with unknown format
+	tempFile := createTempFileWithContent(t, []byte("unknown binary format"))
+	defer os.Remove(tempFile)
+
+	components, err := extractor.ExtractComponents(tempFile)
+	require.NoError(t, err)
+
+	// Should have at least one component (the main application)
+	assert.GreaterOrEqual(t, len(components), 1)
+
+	// First component should be the main application
+	mainComponent := components[0]
+	assert.Equal(t, ComponentTypeApplication, mainComponent.Type)
+	assert.Equal(t, filepath.Base(tempFile), mainComponent.Name)
+	assert.Equal(t, "unknown", mainComponent.Version)
 }
 
-func TestBinaryComponentExtractor_calculateFileHash(t *testing.T) {
-	// Create a temporary test file
+// Helper function to create temporary file with content
+func createTempFileWithContent(t *testing.T, content []byte) string {
+	t.Helper()
+
 	tempDir := t.TempDir()
-	testFile := filepath.Join(tempDir, "test-file")
-	testContent := []byte("test content for hashing")
-	
-	err := os.WriteFile(testFile, testContent, 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-	
+	tempFile := filepath.Join(tempDir, "test-binary")
+
+	err := os.WriteFile(tempFile, content, 0644)
+	require.NoError(t, err)
+
+	return tempFile
+}
+
+// Benchmark tests
+func BenchmarkBinaryComponentExtractor_DetectBinaryFormat(b *testing.B) {
 	extractor := NewBinaryComponentExtractor()
-	hash, err := extractor.calculateFileHash(testFile)
 	
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	
-	if hash == "" {
-		t.Error("Expected hash to be calculated")
-	}
-	
-	// Hash should be 64 characters (SHA256 hex)
-	if len(hash) != 64 {
-		t.Errorf("Expected hash length 64, got %d", len(hash))
-	}
-	
-	// Hash should be consistent
-	hash2, err := extractor.calculateFileHash(testFile)
-	if err != nil {
-		t.Fatalf("Expected no error on second hash, got: %v", err)
-	}
-	
-	if hash != hash2 {
-		t.Error("Expected consistent hash values")
+	// Create a temporary ELF file
+	tempFile := filepath.Join(b.TempDir(), "test-elf")
+	elfHeader := []byte{0x7F, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00}
+	err := os.WriteFile(tempFile, elfHeader, 0644)
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := extractor.detectBinaryFormat(tempFile)
+		require.NoError(b, err)
 	}
 }
 
-func TestBinaryComponentExtractor_calculateFileHash_NonExistentFile(t *testing.T) {
+func BenchmarkBinaryComponentExtractor_ExtractGoModules(b *testing.B) {
 	extractor := NewBinaryComponentExtractor()
 	
-	_, err := extractor.calculateFileHash("/non/existent/file")
-	if err == nil {
-		t.Error("Expected error for non-existent file")
+	content := `
+	github.com/example/module@v1.2.3
+	golang.org/x/crypto@v0.1.0
+	github.com/stretchr/testify@v1.8.4
+	github.com/gin-gonic/gin@v1.9.1
+	github.com/gorilla/mux@v1.8.0
+	`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = extractor.extractGoModules(content)
 	}
 }

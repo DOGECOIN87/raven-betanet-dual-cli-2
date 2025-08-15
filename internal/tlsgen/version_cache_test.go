@@ -1,311 +1,457 @@
 package tlsgen
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewVersionCacheManager(t *testing.T) {
-	vcm := NewVersionCacheManager()
+	cacheTTL := 24 * time.Hour
+	vcm := NewVersionCacheManager(cacheTTL)
 	
-	if vcm == nil {
-		t.Fatal("NewVersionCacheManager() returned nil")
-	}
-	
-	if vcm.cacheFile != DefaultCacheFile {
-		t.Errorf("NewVersionCacheManager() cacheFile = %v, want %v", vcm.cacheFile, DefaultCacheFile)
-	}
-	
-	if vcm.ttl != DefaultCacheLifetime {
-		t.Errorf("NewVersionCacheManager() ttl = %v, want %v", vcm.ttl, DefaultCacheLifetime)
-	}
+	assert.NotNil(t, vcm)
+	assert.Equal(t, cacheTTL, vcm.cacheTTL)
+	assert.NotEmpty(t, vcm.cacheDir)
 }
 
 func TestNewVersionCacheManagerWithPath(t *testing.T) {
-	customDir := "/tmp/test-cache"
-	customTTL := 2 * time.Hour
+	customPath := "/tmp/test-cache"
+	cacheTTL := 12 * time.Hour
+	vcm := NewVersionCacheManagerWithPath(customPath, cacheTTL)
 	
-	vcm := NewVersionCacheManagerWithPath(customDir, customTTL)
-	
-	if vcm == nil {
-		t.Fatal("NewVersionCacheManagerWithPath() returned nil")
-	}
-	
-	if vcm.cacheDir != customDir {
-		t.Errorf("NewVersionCacheManagerWithPath() cacheDir = %v, want %v", vcm.cacheDir, customDir)
-	}
-	
-	if vcm.ttl != customTTL {
-		t.Errorf("NewVersionCacheManagerWithPath() ttl = %v, want %v", vcm.ttl, customTTL)
-	}
+	assert.NotNil(t, vcm)
+	assert.Equal(t, cacheTTL, vcm.cacheTTL)
+	assert.Equal(t, customPath, vcm.cacheDir)
 }
 
 func TestVersionCacheManager_CacheAndGetVersions(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "chrome-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+	tempDir := t.TempDir()
+	vcm := NewVersionCacheManagerWithPath(tempDir, 1*time.Hour)
+
+	// Test versions
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109, Channel: "stable"},
+		{Major: 119, Minor: 0, Build: 6045, Patch: 105, Channel: "stable"},
 	}
-	defer os.RemoveAll(tempDir)
-	
-	vcm := NewVersionCacheManagerWithPath(tempDir, time.Hour)
-	
-	// Test data
-	testVersions := []ChromeVersion{
-		{Major: 120, Minor: 0, Build: 6099, Patch: 109, Channel: "Stable", Platform: "Linux"},
-		{Major: 119, Minor: 0, Build: 6045, Patch: 199, Channel: "Stable", Platform: "Linux"},
-	}
-	
-	// Test caching versions
-	err = vcm.CacheVersions(testVersions)
-	if err != nil {
-		t.Errorf("CacheVersions() unexpected error: %v", err)
-	}
-	
-	// Verify cache file was created
-	cachePath := filepath.Join(tempDir, DefaultCacheFile)
-	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
-		t.Error("CacheVersions() did not create cache file")
-	}
-	
-	// Test getting cached versions
+
+	// Cache versions
+	err := vcm.CacheVersions(versions)
+	require.NoError(t, err)
+
+	// Retrieve cached versions
 	cachedVersions, isValid, err := vcm.GetCachedVersions()
-	if err != nil {
-		t.Errorf("GetCachedVersions() unexpected error: %v", err)
-	}
-	
-	if !isValid {
-		t.Error("GetCachedVersions() returned invalid cache when it should be valid")
-	}
-	
-	if len(cachedVersions) != len(testVersions) {
-		t.Errorf("GetCachedVersions() returned %d versions, want %d", len(cachedVersions), len(testVersions))
-	}
-	
-	// Verify version data
-	for i, version := range cachedVersions {
-		if !version.Equal(testVersions[i]) {
-			t.Errorf("GetCachedVersions() version[%d] = %v, want %v", i, version, testVersions[i])
-		}
-	}
+	require.NoError(t, err)
+	assert.True(t, isValid)
+	assert.Len(t, cachedVersions, 2)
+	assert.Equal(t, versions[0].Major, cachedVersions[0].Major)
+	assert.Equal(t, versions[1].Major, cachedVersions[1].Major)
 }
 
 func TestVersionCacheManager_GetCachedVersions_NoCache(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "chrome-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-	
-	vcm := NewVersionCacheManagerWithPath(tempDir, time.Hour)
-	
-	// Test getting cached versions when no cache exists
+	tempDir := t.TempDir()
+	vcm := NewVersionCacheManagerWithPath(tempDir, 1*time.Hour)
+
+	// Try to get versions when no cache exists
 	cachedVersions, isValid, err := vcm.GetCachedVersions()
-	if err != nil {
-		t.Errorf("GetCachedVersions() unexpected error: %v", err)
-	}
-	
-	if isValid {
-		t.Error("GetCachedVersions() returned valid cache when no cache should exist")
-	}
-	
-	if cachedVersions != nil {
-		t.Error("GetCachedVersions() returned non-nil versions when no cache should exist")
-	}
+	require.NoError(t, err)
+	assert.False(t, isValid)
+	assert.Nil(t, cachedVersions)
 }
 
-func TestVersionCacheManager_GetCachedVersions_StaleCache(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "chrome-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+func TestVersionCacheManager_GetCachedVersions_Expired(t *testing.T) {
+	tempDir := t.TempDir()
+	vcm := NewVersionCacheManagerWithPath(tempDir, 1*time.Millisecond) // Very short TTL
+
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109},
 	}
-	defer os.RemoveAll(tempDir)
-	
-	// Use very short TTL to make cache stale immediately
-	vcm := NewVersionCacheManagerWithPath(tempDir, time.Nanosecond)
-	
-	// Test data
-	testVersions := []ChromeVersion{
-		{Major: 120, Minor: 0, Build: 6099, Patch: 109, Channel: "Stable", Platform: "Linux"},
-	}
-	
+
 	// Cache versions
-	err = vcm.CacheVersions(testVersions)
-	if err != nil {
-		t.Errorf("CacheVersions() unexpected error: %v", err)
-	}
-	
-	// Wait for cache to become stale
-	time.Sleep(time.Millisecond)
-	
-	// Test getting stale cached versions
+	err := vcm.CacheVersions(versions)
+	require.NoError(t, err)
+
+	// Wait for cache to expire
+	time.Sleep(10 * time.Millisecond)
+
+	// Try to get expired versions
 	cachedVersions, isValid, err := vcm.GetCachedVersions()
-	if err != nil {
-		t.Errorf("GetCachedVersions() unexpected error: %v", err)
-	}
-	
-	if isValid {
-		t.Error("GetCachedVersions() returned valid cache when cache should be stale")
-	}
-	
-	if cachedVersions == nil {
-		t.Error("GetCachedVersions() returned nil versions, should return stale data")
-	}
-	
-	if len(cachedVersions) != len(testVersions) {
-		t.Errorf("GetCachedVersions() returned %d versions, want %d", len(cachedVersions), len(testVersions))
-	}
+	require.NoError(t, err)
+	assert.False(t, isValid)
+	assert.NotNil(t, cachedVersions) // Should still return the versions even if expired
 }
 
-func TestVersionCacheManager_InvalidateCache(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "chrome-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+func TestVersionCacheManager_ClearCache(t *testing.T) {
+	tempDir := t.TempDir()
+	vcm := NewVersionCacheManagerWithPath(tempDir, 1*time.Hour)
+
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109},
 	}
-	defer os.RemoveAll(tempDir)
-	
-	vcm := NewVersionCacheManagerWithPath(tempDir, time.Hour)
-	
-	// Test data
-	testVersions := []ChromeVersion{
-		{Major: 120, Minor: 0, Build: 6099, Patch: 109, Channel: "Stable", Platform: "Linux"},
-	}
-	
+
 	// Cache versions
-	err = vcm.CacheVersions(testVersions)
-	if err != nil {
-		t.Errorf("CacheVersions() unexpected error: %v", err)
-	}
-	
-	// Verify cache file exists
-	cachePath := filepath.Join(tempDir, DefaultCacheFile)
-	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
-		t.Error("Cache file should exist before invalidation")
-	}
-	
-	// Invalidate cache
-	err = vcm.InvalidateCache()
-	if err != nil {
-		t.Errorf("InvalidateCache() unexpected error: %v", err)
-	}
-	
-	// Verify cache file was removed
-	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
-		t.Error("Cache file should not exist after invalidation")
-	}
-	
-	// Test invalidating non-existent cache (should not error)
-	err = vcm.InvalidateCache()
-	if err != nil {
-		t.Errorf("InvalidateCache() on non-existent cache unexpected error: %v", err)
-	}
+	err := vcm.CacheVersions(versions)
+	require.NoError(t, err)
+
+	// Verify cache exists
+	cachedVersions, isValid, err := vcm.GetCachedVersions()
+	require.NoError(t, err)
+	assert.True(t, isValid)
+	assert.NotNil(t, cachedVersions)
+
+	// Clear cache
+	err = vcm.ClearCache()
+	require.NoError(t, err)
+
+	// Verify cache is cleared
+	cachedVersions, isValid, err = vcm.GetCachedVersions()
+	require.NoError(t, err)
+	assert.False(t, isValid)
+	assert.Nil(t, cachedVersions)
 }
 
 func TestVersionCacheManager_GetCacheInfo(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "chrome-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+	tempDir := t.TempDir()
+	vcm := NewVersionCacheManagerWithPath(tempDir, 1*time.Hour)
+
+	// Test cache info when no cache exists
+	info, err := vcm.GetCacheInfo()
+	require.NoError(t, err)
+	assert.False(t, info.Exists)
+	assert.False(t, info.Valid)
+	assert.Equal(t, 0, info.VersionCount)
+
+	// Cache some versions
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		{Major: 119, Minor: 0, Build: 6045, Patch: 105},
 	}
-	defer os.RemoveAll(tempDir)
-	
-	vcm := NewVersionCacheManagerWithPath(tempDir, time.Hour)
-	
-	// Test getting cache info when no cache exists
-	_, err = vcm.GetCacheInfo()
-	if err == nil {
-		t.Error("GetCacheInfo() should return error when no cache exists")
+	err = vcm.CacheVersions(versions)
+	require.NoError(t, err)
+
+	// Test cache info when cache exists
+	info, err = vcm.GetCacheInfo()
+	require.NoError(t, err)
+	assert.True(t, info.Exists)
+	assert.True(t, info.Valid)
+	assert.Equal(t, 2, info.VersionCount)
+	assert.Equal(t, "chromium-api", info.Source)
+	assert.Greater(t, info.Size, int64(0))
+}
+
+func TestCacheInfo_IsExpired(t *testing.T) {
+	// Test non-expired cache
+	validInfo := &CacheInfo{
+		Valid:     true,
+		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
-	
-	// Test data
-	testVersions := []ChromeVersion{
-		{Major: 120, Minor: 0, Build: 6099, Patch: 109, Channel: "Stable", Platform: "Linux"},
+	assert.False(t, validInfo.IsExpired())
+
+	// Test expired cache
+	expiredInfo := &CacheInfo{
+		Valid:     false,
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
 	}
-	
-	// Cache versions
-	beforeCache := time.Now()
-	err = vcm.CacheVersions(testVersions)
-	if err != nil {
-		t.Errorf("CacheVersions() unexpected error: %v", err)
+	assert.True(t, expiredInfo.IsExpired())
+}
+
+func TestCacheInfo_TimeUntilExpiry(t *testing.T) {
+	// Test non-expired cache
+	validInfo := &CacheInfo{
+		Valid:     true,
+		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
-	afterCache := time.Now()
-	
-	// Get cache info
-	cacheInfo, err := vcm.GetCacheInfo()
-	if err != nil {
-		t.Errorf("GetCacheInfo() unexpected error: %v", err)
+	timeUntilExpiry := validInfo.TimeUntilExpiry()
+	assert.Greater(t, timeUntilExpiry, 50*time.Minute)
+	assert.Less(t, timeUntilExpiry, 70*time.Minute)
+
+	// Test expired cache
+	expiredInfo := &CacheInfo{
+		Valid:     false,
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
 	}
-	
-	if cacheInfo == nil {
-		t.Fatal("GetCacheInfo() returned nil cache info")
+	assert.Equal(t, time.Duration(0), expiredInfo.TimeUntilExpiry())
+}
+
+func TestCacheInfo_GetCacheAge(t *testing.T) {
+	// Test cache with age
+	info := &CacheInfo{
+		Exists:   true,
+		CachedAt: time.Now().Add(-30 * time.Minute),
 	}
-	
-	if len(cacheInfo.Versions) != len(testVersions) {
-		t.Errorf("GetCacheInfo() returned %d versions, want %d", len(cacheInfo.Versions), len(testVersions))
+	age := info.GetCacheAge()
+	assert.Greater(t, age, 25*time.Minute)
+	assert.Less(t, age, 35*time.Minute)
+
+	// Test non-existent cache
+	nonExistentInfo := &CacheInfo{
+		Exists: false,
 	}
-	
-	if cacheInfo.TTL != time.Hour {
-		t.Errorf("GetCacheInfo() TTL = %v, want %v", cacheInfo.TTL, time.Hour)
+	assert.Equal(t, time.Duration(0), nonExistentInfo.GetCacheAge())
+}
+
+func TestNewTemplateCache(t *testing.T) {
+	cache := NewTemplateCache()
+	assert.NotNil(t, cache)
+	assert.NotEmpty(t, cache.cacheDir)
+}
+
+func TestNewTemplateCacheWithPath(t *testing.T) {
+	customPath := "/tmp/test-templates"
+	cache := NewTemplateCacheWithPath(customPath)
+	assert.NotNil(t, cache)
+	assert.Equal(t, customPath, cache.cacheDir)
+}
+
+func TestTemplateCache_StoreAndGetTemplate(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
+	template := &ClientHelloTemplate{
+		Version:     version,
+		Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3String:   "771,4865-4866-4867,0-23-65281,29-23-24,0",
+		JA3Hash:     "cd08e31494f9531f560d64c695473da9",
+		GeneratedAt: time.Now(),
 	}
-	
-	// Check that UpdatedAt is reasonable
-	if cacheInfo.UpdatedAt.Before(beforeCache) || cacheInfo.UpdatedAt.After(afterCache) {
-		t.Errorf("GetCacheInfo() UpdatedAt = %v, should be between %v and %v", 
-			cacheInfo.UpdatedAt, beforeCache, afterCache)
+
+	// Store template
+	err := cache.StoreTemplate(template)
+	require.NoError(t, err)
+
+	// Retrieve template
+	retrievedTemplate, err := cache.GetTemplate(version)
+	require.NoError(t, err)
+	require.NotNil(t, retrievedTemplate)
+
+	assert.Equal(t, template.Version, retrievedTemplate.Version)
+	assert.Equal(t, template.JA3Hash, retrievedTemplate.JA3Hash)
+	assert.Equal(t, template.JA3String, retrievedTemplate.JA3String)
+}
+
+func TestTemplateCache_GetTemplate_NotFound(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
+
+	// Try to get non-existent template
+	template, err := cache.GetTemplate(version)
+	require.NoError(t, err)
+	assert.Nil(t, template)
+}
+
+func TestTemplateCache_ListTemplates(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	// Test empty cache
+	templates, err := cache.ListTemplates()
+	require.NoError(t, err)
+	assert.Empty(t, templates)
+
+	// Store some templates
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		{Major: 119, Minor: 0, Build: 6045, Patch: 105},
+	}
+
+	for _, version := range versions {
+		template := &ClientHelloTemplate{
+			Version:     version,
+			Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+			JA3Hash:     "test-hash",
+			GeneratedAt: time.Now(),
+		}
+		err := cache.StoreTemplate(template)
+		require.NoError(t, err)
+	}
+
+	// List templates
+	templates, err = cache.ListTemplates()
+	require.NoError(t, err)
+	assert.Len(t, templates, 2)
+
+	// Check template info
+	for _, templateInfo := range templates {
+		assert.NotEmpty(t, templateInfo.FilePath)
+		assert.Greater(t, templateInfo.Size, int64(0))
+		assert.False(t, templateInfo.GeneratedAt.IsZero())
+		assert.Equal(t, "test-hash", templateInfo.JA3Hash)
 	}
 }
 
-func TestVersionCacheManager_IsStale(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "chrome-cache-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+func TestTemplateCache_RemoveTemplate(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
+	template := &ClientHelloTemplate{
+		Version:     version,
+		Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash:     "test-hash",
+		GeneratedAt: time.Now(),
 	}
-	defer os.RemoveAll(tempDir)
-	
-	// Test when no cache exists
-	vcm := NewVersionCacheManagerWithPath(tempDir, time.Hour)
-	isStale, err := vcm.IsStale()
-	if err == nil {
-		t.Error("IsStale() should return error when no cache exists")
+
+	// Store template
+	err := cache.StoreTemplate(template)
+	require.NoError(t, err)
+
+	// Verify template exists
+	retrievedTemplate, err := cache.GetTemplate(version)
+	require.NoError(t, err)
+	assert.NotNil(t, retrievedTemplate)
+
+	// Remove template
+	err = cache.RemoveTemplate(version)
+	require.NoError(t, err)
+
+	// Verify template is removed
+	retrievedTemplate, err = cache.GetTemplate(version)
+	require.NoError(t, err)
+	assert.Nil(t, retrievedTemplate)
+}
+
+func TestTemplateCache_ClearTemplates(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	// Store some templates
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		{Major: 119, Minor: 0, Build: 6045, Patch: 105},
 	}
-	if !isStale {
-		t.Error("IsStale() should return true when no cache exists")
+
+	for _, version := range versions {
+		template := &ClientHelloTemplate{
+			Version:     version,
+			Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+			JA3Hash:     "test-hash",
+			GeneratedAt: time.Now(),
+		}
+		err := cache.StoreTemplate(template)
+		require.NoError(t, err)
 	}
-	
-	// Test with fresh cache
-	vcm = NewVersionCacheManagerWithPath(tempDir, time.Hour)
-	testVersions := []ChromeVersion{
-		{Major: 120, Minor: 0, Build: 6099, Patch: 109, Channel: "Stable", Platform: "Linux"},
+
+	// Verify templates exist
+	templates, err := cache.ListTemplates()
+	require.NoError(t, err)
+	assert.Len(t, templates, 2)
+
+	// Clear all templates
+	err = cache.ClearTemplates()
+	require.NoError(t, err)
+
+	// Verify templates are cleared
+	templates, err = cache.ListTemplates()
+	require.NoError(t, err)
+	assert.Empty(t, templates)
+}
+
+func TestTemplateCache_GetCacheSize(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	// Test empty cache
+	size, err := cache.GetCacheSize()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+
+	// Store a template
+	version := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
+	template := &ClientHelloTemplate{
+		Version:     version,
+		Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash:     "test-hash",
+		GeneratedAt: time.Now(),
 	}
-	
-	err = vcm.CacheVersions(testVersions)
-	if err != nil {
-		t.Errorf("CacheVersions() unexpected error: %v", err)
+	err = cache.StoreTemplate(template)
+	require.NoError(t, err)
+
+	// Test cache with content
+	size, err = cache.GetCacheSize()
+	require.NoError(t, err)
+	assert.Greater(t, size, int64(0))
+}
+
+func TestTemplateCache_CleanupExpiredTemplates(t *testing.T) {
+	tempDir := t.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	// Store templates with different ages
+	oldVersion := ChromeVersion{Major: 119, Minor: 0, Build: 6045, Patch: 105}
+	oldTemplate := &ClientHelloTemplate{
+		Version:     oldVersion,
+		Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash:     "old-hash",
+		GeneratedAt: time.Now().Add(-2 * time.Hour), // Old template
 	}
-	
-	isStale, err = vcm.IsStale()
-	if err != nil {
-		t.Errorf("IsStale() unexpected error: %v", err)
+
+	newVersion := ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109}
+	newTemplate := &ClientHelloTemplate{
+		Version:     newVersion,
+		Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash:     "new-hash",
+		GeneratedAt: time.Now(), // New template
 	}
-	if isStale {
-		t.Error("IsStale() should return false for fresh cache")
+
+	err := cache.StoreTemplate(oldTemplate)
+	require.NoError(t, err)
+	err = cache.StoreTemplate(newTemplate)
+	require.NoError(t, err)
+
+	// Verify both templates exist
+	templates, err := cache.ListTemplates()
+	require.NoError(t, err)
+	assert.Len(t, templates, 2)
+
+	// Cleanup templates older than 1 hour
+	err = cache.CleanupExpiredTemplates(1 * time.Hour)
+	require.NoError(t, err)
+
+	// Verify only new template remains
+	templates, err = cache.ListTemplates()
+	require.NoError(t, err)
+	assert.Len(t, templates, 1)
+	assert.Equal(t, newVersion.Major, templates[0].Version.Major)
+}
+
+// Benchmark tests
+func BenchmarkVersionCacheManager_CacheVersions(b *testing.B) {
+	tempDir := b.TempDir()
+	vcm := NewVersionCacheManagerWithPath(tempDir, 1*time.Hour)
+
+	versions := []ChromeVersion{
+		{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		{Major: 119, Minor: 0, Build: 6045, Patch: 105},
+		{Major: 118, Minor: 0, Build: 5993, Patch: 117},
 	}
-	
-	// Test with stale cache
-	vcm = NewVersionCacheManagerWithPath(tempDir, time.Nanosecond)
-	time.Sleep(time.Millisecond)
-	
-	isStale, err = vcm.IsStale()
-	if err != nil {
-		t.Errorf("IsStale() unexpected error: %v", err)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := vcm.CacheVersions(versions)
+		require.NoError(b, err)
 	}
-	if !isStale {
-		t.Error("IsStale() should return true for stale cache")
+}
+
+func BenchmarkTemplateCache_StoreTemplate(b *testing.B) {
+	tempDir := b.TempDir()
+	cache := NewTemplateCacheWithPath(tempDir)
+
+	template := &ClientHelloTemplate{
+		Version:     ChromeVersion{Major: 120, Minor: 0, Build: 6099, Patch: 109},
+		Bytes:       []byte{0x16, 0x03, 0x01, 0x00, 0x10},
+		JA3Hash:     "test-hash",
+		GeneratedAt: time.Now(),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		template.Version.Patch = i // Make each template unique
+		err := cache.StoreTemplate(template)
+		require.NoError(b, err)
 	}
 }

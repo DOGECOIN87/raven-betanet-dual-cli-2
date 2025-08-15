@@ -1,14 +1,38 @@
 {
-  "version": {
-    "major": 139,
-    "minor": 0,
-    "build": 7258,
-    "patch": 127,
-    "channel": "stable",
-    "platform": "linux"
-  },
-  "generated_at": "2024-01-15T10:30:00Z",
+  "version": "120.0.6099.109",
   "ja3_string": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0",
   "ja3_hash": "cd08e31494f9531f560d64c695473da9",
-  "description": "Chrome 139.0.7258.127 stable TLS handshake"
+  "generated_at": "2024-01-15T10:30:00Z",
+  "metadata": {
+    "utls_fingerprint": "HelloChrome_120",
+    "tls_version": "TLS 1.3",
+    "cipher_suites": [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+    ],
+    "extensions": [
+      "server_name",
+      "extended_master_secret",
+      "renegotiation_info",
+      "supported_groups",
+      "ec_point_formats",
+      "session_ticket",
+      "application_layer_protocol_negotiation",
+      "status_request",
+      "signature_algorithms",
+      "signed_certificate_timestamp",
+      "key_share",
+      "psk_key_exchange_modes",
+      "supported_versions",
+      "compress_certificate",
+      "padding"
+    ]
+  }
 }
